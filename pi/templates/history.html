@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">History</h3>
+      <div class="text-secondary">ACK/RESOLVED alerts (newest first).</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('history') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end">
+        <div class="col-12 col-md-3">
+          <label class="form-label small text-secondary mb-1">Type</label>
+          <select name="type" class="form-select form-select-sm">
+            <option value="">All</option>
+            {% for t in types %}
+              <option value="{{ t }}" {{ "selected" if t==type_filter else "" }}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label small text-secondary mb-1">Room</label>
+          <select name="room" class="form-select form-select-sm">
+            <option value="">All</option>
+            {% for r in rooms %}
+              <option value="{{ r }}" {{ "selected" if r==room_filter else "" }}>{{ r }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-2">
+          <label class="form-label small text-secondary mb-1">Sort</label>
+          <select name="sort" class="form-select form-select-sm">
+            <option value="newest" {{ "selected" if sort=="newest" else "" }}>Newest</option>
+            <option value="severity" {{ "selected" if sort=="severity" else "" }}>Severity</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label small text-secondary mb-1">Search</label>
+          <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="details / room / type">
+        </div>
+        <div class="col-12 col-md-1 d-flex gap-2">
+          <button class="btn btn-sm btn-primary w-100" type="submit"><i class="bi bi-funnel me-1"></i></button>
+          <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('history') }}"><i class="bi bi-x-lg"></i></a>
+        </div>
+      </form>
+
+      <hr class="my-3">
+
+      {% if alerts|length == 0 %}
+        <div class="text-secondary">No history yet.</div>
+      {% else %}
+        <div class="table-responsive">
+          <table class="table table-striped table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 90px;">ID</th>
+                <th>Type</th>
+                <th>Room</th>
+                <th style="width: 120px;">Severity</th>
+                <th style="width: 120px;">Status</th>
+                <th style="width: 220px;">Created</th>
+                <th style="width: 220px;">Ack/Resolved</th>
+                <th>Details</th>
+                <th style="width: 120px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in alerts %}
+              <tr>
+                <td class="font-monospace">#{{ a["id"] }}</td>
+                <td><span class="badge text-bg-dark-subtle border">{{ a["type"] }}</span></td>
+                <td>{{ a["room"] or "-" }}</td>
+                <td>
+                  {% if a["severity"]|int >= 3 %}
+                    <span class="badge text-bg-danger">High</span>
+                  {% elif a["severity"]|int == 2 %}
+                    <span class="badge text-bg-warning">Med</span>
+                  {% else %}
+                    <span class="badge text-bg-success">Low</span>
+                  {% endif %}
+                </td>
+                <td><span class="badge text-bg-secondary">{{ a["status"] }}</span></td>
+                <td class="font-monospace small">{{ a["ts"] }}</td>
+                <td class="font-monospace small">{{ a["ack_ts"] or "-" }}</td>
+                <td class="text-break">{{ a["details"] or "" }}</td>
+                <td>
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">
+                    <i class="bi bi-eye"></i>
+                  </a>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

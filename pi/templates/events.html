@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Events</h3>
+      <div class="text-secondary">Raw event log (Week 4 hook). Useful for debugging later.</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('events') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <form method="get" class="row g-2 align-items-end">
+        <div class="col-12 col-md-3">
+          <label class="form-label small text-secondary mb-1">Type</label>
+          <input name="type" value="{{ type_filter }}" class="form-control form-control-sm" placeholder="e.g., UNKNOWN">
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label small text-secondary mb-1">Source</label>
+          <input name="source" value="{{ source_filter }}" class="form-control form-control-sm" placeholder="e.g., CAM_OUTDOOR">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label small text-secondary mb-1">Search</label>
+          <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="details / source / type">
+        </div>
+        <div class="col-12 col-md-2 d-flex gap-2">
+          <button class="btn btn-sm btn-primary w-100" type="submit"><i class="bi bi-funnel me-1"></i>Apply</button>
+          <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('events') }}">Clear</a>
+        </div>
+      </form>
+
+      <hr class="my-3">
+
+      {% if events|length == 0 %}
+        <div class="text-secondary">No events yet. Run <span class="font-monospace">python pi/fake_events.py</span>.</div>
+      {% else %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 90px;">ID</th>
+                <th style="width: 200px;">Type</th>
+                <th style="width: 200px;">Source</th>
+                <th style="width: 220px;">Timestamp</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for e in events %}
+              <tr>
+                <td class="font-monospace">#{{ e["id"] }}</td>
+                <td><span class="badge text-bg-dark-subtle border">{{ e["type"] }}</span></td>
+                <td><span class="badge text-bg-secondary-subtle border">{{ e["source"] }}</span></td>
+                <td class="font-monospace small">{{ e["ts"] }}</td>
+                <td class="text-break">{{ e["details"] or "" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

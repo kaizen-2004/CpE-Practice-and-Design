@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Alert #{{ alert["id"] }}</h3>
+      <div class="text-secondary">
+        <span class="badge text-bg-dark-subtle border">{{ alert["type"] }}</span>
+        {% if alert["room"] %} • {{ alert["room"] }}{% endif %}
+        • <span class="badge text-bg-secondary">{{ alert["status"] }}</span>
+      </div>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}"><i class="bi bi-arrow-left me-1"></i>Back</a>
+      {% if alert["status"] == "ACTIVE" %}
+      <form method="post" action="{{ url_for('ack', alert_id=alert['id']) }}" class="d-flex gap-2">
+        <select name="status" class="form-select" style="max-width: 160px;">
+          <option value="ACK">ACK</option>
+          <option value="RESOLVED">RESOLVED</option>
+        </select>
+        <button class="btn btn-primary" type="submit"><i class="bi bi-check2-circle me-1"></i>Submit</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12 col-lg-5">
+      <div class="card shadow-sm">
+        {% if alert["snapshot_path"] %}
+          {# snapshot_path might be like "snapshots/<file>" #}
+          {% set rel = alert["snapshot_path"].replace("snapshots/","") %}
+          <img class="card-img-top object-fit-cover" style="max-height: 320px;"
+               src="{{ url_for('serve_snapshot', filename=rel) }}" alt="alert snapshot">
+        {% else %}
+          <div class="p-4 text-center text-secondary">No snapshot attached yet.</div>
+        {% endif %}
+
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-6">
+              <div class="small text-secondary">Severity</div>
+              {% if alert["severity"]|int >= 3 %}
+                <span class="badge text-bg-danger">High</span>
+              {% elif alert["severity"]|int == 2 %}
+                <span class="badge text-bg-warning">Med</span>
+              {% else %}
+                <span class="badge text-bg-success">Low</span>
+              {% endif %}
+            </div>
+            <div class="col-6">
+              <div class="small text-secondary">Created</div>
+              <div class="font-monospace small">{{ alert["ts"] }}</div>
+            </div>
+            <div class="col-6">
+              <div class="small text-secondary">Ack/Resolved</div>
+              <div class="font-monospace small">{{ alert["ack_ts"] or "-" }}</div>
+            </div>
+            <div class="col-6">
+              <div class="small text-secondary">Room</div>
+              <div>{{ alert["room"] or "-" }}</div>
+            </div>
+            <div class="col-12">
+              <div class="small text-secondary">Details</div>
+              <div class="text-break">{{ alert["details"] or "" }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {% if snapshots|length > 0 %}
+        <div class="card shadow-sm mt-3">
+          <div class="card-body">
+            <div class="fw-semibold mb-2">Linked Snapshots</div>
+            <div class="d-flex flex-wrap gap-2">
+              {% for s in snapshots %}
+                <a href="{{ url_for('snapshot_details', snapshot_id=s['id']) }}" class="text-decoration-none">
+                  <img src="{{ url_for('serve_snapshot', filename=s['file_relpath']) }}"
+                       class="rounded border object-fit-cover" style="width: 96px; height: 64px;" alt="snap">
+                </a>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="col-12 col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <div>
+              <div class="fw-semibold">Nearby Events</div>
+              <div class="text-secondary small">Events within ±10 minutes of alert timestamp.</div>
+            </div>
+            <div class="text-secondary small font-monospace">{{ win_start }} → {{ win_end }}</div>
+          </div>
+
+          <hr class="my-3">
+
+          {% if near_events|length == 0 %}
+            <div class="text-secondary">No nearby events found.</div>
+          {% else %}
+            <div class="table-responsive">
+              <table class="table table-sm table-hover align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th style="width: 220px;">Timestamp</th>
+                    <th style="width: 200px;">Type</th>
+                    <th style="width: 200px;">Source</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for e in near_events %}
+                  <tr>
+                    <td class="font-monospace small">{{ e["ts"] }}</td>
+                    <td><span class="badge text-bg-dark-subtle border">{{ e["type"] }}</span></td>
+                    <td><span class="badge text-bg-secondary-subtle border">{{ e["source"] }}</span></td>
+                    <td class="text-break">{{ e["details"] or "" }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

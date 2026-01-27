@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Snapshot #{{ snap["id"] }}</h3>
+      <div class="text-secondary">Type: <span class="badge text-bg-dark-subtle border">{{ snap["type"] }}</span>
+        {% if snap["label"] %} • Label: <span class="badge text-bg-secondary">{{ snap["label"] }}</span>{% endif %}
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-arrow-left me-1"></i>Back</a>
+      {% if snap["linked_alert_id"] %}
+        <a class="btn btn-outline-primary" href="{{ url_for('alert_details', alert_id=snap['linked_alert_id']) }}"><i class="bi bi-bell me-1"></i>Linked Alert</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <img class="card-img-top object-fit-contain bg-dark-subtle" style="max-height: 65vh;"
+         src="{{ url_for('serve_snapshot', filename=snap['file_relpath']) }}" alt="snapshot">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary">Timestamp</div>
+          <div class="font-monospace">{{ snap["ts"] }}</div>
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary">File</div>
+          <div class="font-monospace">{{ snap["file_relpath"] }}</div>
+        </div>
+        <div class="col-12">
+          <div class="small text-secondary">Note</div>
+          <div>{{ snap["note"] or "-" }}</div>
+        </div>
+      </div>
+
+      <hr class="my-3">
+      <div class="text-secondary small">
+        Later you can add buttons here: “Mark as Authorized”, “Mark as Guest Log”, “Mark as False Alarm”.
+      </div>
+    </div>
+  </div>
+{% endblock %}

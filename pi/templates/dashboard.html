@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Dashboard</h3>
+      <div class="text-secondary">ACTIVE alerts stay visible until ACK/RESOLVED.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>View Snapshots</a>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-secondary small">Active Alerts</div>
+              <div class="display-6 fw-semibold">{{ active_alert_count }}</div>
+            </div>
+            <div class="icon-pill text-bg-primary-subtle">
+              <i class="bi bi-bell-fill"></i>
+            </div>
+          </div>
+          <div class="text-secondary small mt-2">Use filters below to focus on a type/room.</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-secondary small">Guest Mode</div>
+              <div class="h3 mb-0">{{ "ON" if guest_mode else "OFF" }}</div>
+            </div>
+            <div class="icon-pill {{ 'text-bg-warning' if guest_mode else 'text-bg-secondary-subtle' }}">
+              <i class="bi bi-people"></i>
+            </div>
+          </div>
+          <div class="text-secondary small mt-2">When ON, UNKNOWN faces should log as low severity later.</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-secondary small">Quick Actions</div>
+              <div class="d-flex flex-wrap gap-2 mt-2">
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('history') }}"><i class="bi bi-clock-history me-1"></i>History</a>
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}"><i class="bi bi-list-check me-1"></i>Events</a>
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('health') }}"><i class="bi bi-activity me-1"></i>Health</a>
+              </div>
+            </div>
+            <div class="icon-pill text-bg-success-subtle">
+              <i class="bi bi-lightning-charge"></i>
+            </div>
+          </div>
+          <div class="text-secondary small mt-2">Try auto-refresh + sound in the UX menu.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center">
+        <h5 class="mb-0">ACTIVE Alerts</h5>
+        <form method="get" class="row g-2 align-items-end">
+          <div class="col-12 col-md-auto">
+            <label class="form-label small text-secondary mb-1">Type</label>
+            <select name="type" class="form-select form-select-sm">
+              <option value="">All</option>
+              {% for t in types %}
+                <option value="{{ t }}" {{ "selected" if t==type_filter else "" }}>{{ t }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12 col-md-auto">
+            <label class="form-label small text-secondary mb-1">Room</label>
+            <select name="room" class="form-select form-select-sm">
+              <option value="">All</option>
+              {% for r in rooms %}
+                <option value="{{ r }}" {{ "selected" if r==room_filter else "" }}>{{ r }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-12 col-md-auto">
+            <label class="form-label small text-secondary mb-1">Sort</label>
+            <select name="sort" class="form-select form-select-sm">
+              <option value="newest" {{ "selected" if sort=="newest" else "" }}>Newest</option>
+              <option value="severity" {{ "selected" if sort=="severity" else "" }}>Severity</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-auto">
+            <label class="form-label small text-secondary mb-1">Search</label>
+            <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="details / room / type">
+          </div>
+          <div class="col-12 col-md-auto">
+            <button class="btn btn-sm btn-primary" type="submit"><i class="bi bi-funnel me-1"></i>Apply</button>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard') }}">Clear</a>
+          </div>
+        </form>
+      </div>
+
+      <hr class="my-3">
+
+      {% if alerts|length == 0 %}
+        <div class="text-secondary">No active alerts.</div>
+      {% else %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 90px;">ID</th>
+                <th>Type</th>
+                <th>Room</th>
+                <th style="width: 120px;">Severity</th>
+                <th style="width: 220px;">Created</th>
+                <th>Details</th>
+                <th style="width: 290px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for a in alerts %}
+              <tr>
+                <td class="font-monospace">#{{ a["id"] }}</td>
+                <td><span class="badge text-bg-dark-subtle border">{{ a["type"] }}</span></td>
+                <td>{{ a["room"] or "-" }}</td>
+                <td>
+                  {% if a["severity"]|int >= 3 %}
+                    <span class="badge text-bg-danger">High</span>
+                  {% elif a["severity"]|int == 2 %}
+                    <span class="badge text-bg-warning">Med</span>
+                  {% else %}
+                    <span class="badge text-bg-success">Low</span>
+                  {% endif %}
+                </td>
+                <td class="font-monospace small">{{ a["ts"] }}</td>
+                <td class="text-break">{{ a["details"] or "" }}</td>
+                <td>
+                  <div class="d-flex gap-2 flex-wrap">
+                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">
+                      <i class="bi bi-eye me-1"></i>Details
+                    </a>
+                    <form method="post" action="{{ url_for('ack', alert_id=a['id']) }}" class="d-flex gap-2">
+                      <select name="status" class="form-select form-select-sm" style="max-width: 140px;">
+                        <option value="ACK">ACK</option>
+                        <option value="RESOLVED">RESOLVED</option>
+                      </select>
+                      <button class="btn btn-sm btn-outline-primary" type="submit">
+                        <i class="bi bi-check2-circle me-1"></i>Submit
+                      </button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+  // Auto-refresh only for dashboard
+  (function() {
+    const seconds = parseInt(localStorage.getItem("autoRefreshSeconds") || "0", 10);
+    if (!seconds || seconds <= 0) return;
+    setTimeout(() => location.reload(), seconds * 1000);
+  })();
+</script>
+{% endblock %}

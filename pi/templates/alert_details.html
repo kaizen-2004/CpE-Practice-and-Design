@@ -27,7 +27,6 @@
     <div class="col-12 col-lg-5">
       <div class="card shadow-sm">
         {% if alert["snapshot_path"] %}
-          {# snapshot_path might be like "snapshots/<file>" #}
           {% set rel = alert["snapshot_path"].replace("snapshots/","") %}
           <img class="card-img-top object-fit-cover" style="max-height: 320px;"
                src="{{ url_for('serve_snapshot', filename=rel) }}" alt="alert snapshot">

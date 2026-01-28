@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Face: {{ face["name"] }}</h3>
+      <div class="text-secondary">
+        ID: <span class="badge text-bg-secondary">#{{ face["id"] }}</span>
+        • Samples: <span class="badge text-bg-secondary">{{ face["sample_count"] }}</span>
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('faces') }}"><i class="bi bi-arrow-left me-1"></i>Back</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>Snapshots</a>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="fw-semibold mb-2">Add a snapshot sample by ID</div>
+      <form method="post" action="{{ url_for('add_sample_to_face', face_id=face['id']) }}" class="row g-2 align-items-end">
+        <div class="col-12 col-md-4">
+          <label class="form-label small text-secondary mb-1">Snapshot ID</label>
+          <input name="snapshot_id" class="form-control" placeholder="e.g., 12" required>
+        </div>
+        <div class="col-12 col-md-8">
+          <button class="btn btn-outline-primary" type="submit"><i class="bi bi-link-45deg me-1"></i>Link sample</button>
+          <span class="text-secondary small ms-2">Tip: open a snapshot and use “Create Face + Link” for easier workflow.</span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="fw-semibold mb-2">Samples</div>
+      {% if samples|length == 0 %}
+        <div class="text-secondary">No samples yet. Add from Snapshot page.</div>
+      {% else %}
+        <div class="row g-3">
+          {% for s in samples %}
+            <div class="col-12 col-md-6 col-lg-4">
+              <div class="card h-100 shadow-sm">
+                <img class="card-img-top object-fit-cover" style="height: 160px;"
+                     src="{{ url_for('serve_snapshot', filename=s['file_relpath']) }}" alt="sample">
+                <div class="card-body">
+                  <div class="small text-secondary">Snapshot #{{ s["snapshot_id"] }} • {{ s["snapshot_ts"] }}</div>
+                  <div class="fw-semibold">{{ s["snapshot_type"] }}</div>
+                  {% if s["snapshot_label"] %}
+                    <span class="badge text-bg-secondary mt-2">{{ s["snapshot_label"] }}</span>
+                  {% endif %}
+                  {% if s["snapshot_note"] %}
+                    <div class="text-secondary small mt-2">{{ s["snapshot_note"] }}</div>
+                  {% endif %}
+                </div>
+                <div class="card-footer bg-body">
+                  <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('snapshot_details', snapshot_id=s['snapshot_id']) }}">
+                    <i class="bi bi-eye me-1"></i>Open snapshot
+                  </a>
+                </div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+      <div class="text-secondary small mt-3">These samples become your LBPH training set later.</div>
+    </div>
+  </div>
+{% endblock %}

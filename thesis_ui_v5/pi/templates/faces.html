@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+    <div>
+      <h3 class="mb-1">Faces</h3>
+      <div class="text-secondary">Authorized dataset manager (UI-ready now; training comes later).</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>Go to Snapshots</a>
+  </div>
+
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="fw-semibold mb-2">Add new person</div>
+      <form method="post" action="{{ url_for('faces_new') }}" class="row g-2 align-items-end">
+        <div class="col-12 col-md-5">
+          <label class="form-label small text-secondary mb-1">Name</label>
+          <input name="name" class="form-control" placeholder="e.g., Tepan" required>
+        </div>
+        <div class="col-12 col-md-5">
+          <label class="form-label small text-secondary mb-1">Note (optional)</label>
+          <input name="note" class="form-control" placeholder="owner / roommate / staff">
+        </div>
+        <div class="col-12 col-md-2">
+          <button class="btn btn-primary w-100" type="submit"><i class="bi bi-plus-lg me-1"></i>Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="fw-semibold mb-2">Registered faces</div>
+      {% if faces|length == 0 %}
+        <div class="text-secondary">No faces yet. Add from a snapshot or create a new person above.</div>
+      {% else %}
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 90px;">ID</th>
+                <th>Name</th>
+                <th style="width: 120px;">Samples</th>
+                <th style="width: 240px;">Created</th>
+                <th>Note</th>
+                <th style="width: 160px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for f in faces %}
+              <tr>
+                <td class="font-monospace">#{{ f["id"] }}</td>
+                <td class="fw-semibold">{{ f["name"] }}</td>
+                <td><span class="badge text-bg-secondary">{{ f["sample_count"] }}</span></td>
+                <td class="font-monospace small">{{ f["created_ts"] }}</td>
+                <td class="text-break">{{ f["note"] or "" }}</td>
+                <td class="d-flex gap-2">
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('face_details', face_id=f['id']) }}"><i class="bi bi-eye"></i></a>
+                  <form method="post" action="{{ url_for('faces_delete', face_id=f['id']) }}" onsubmit="return confirm('Delete this face?');">
+                    <button class="btn btn-sm btn-outline-danger" type="submit"><i class="bi bi-trash"></i></button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      <div class="text-secondary small mt-3">Later you’ll add “Retrain LBPH” button here (Week 7+).</div>
+    </div>
+  </div>
+{% endblock %}

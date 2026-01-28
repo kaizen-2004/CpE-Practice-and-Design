@@ -7,7 +7,8 @@
     </div>
     <div class="d-flex gap-2">
       <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>View Snapshots</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>Snapshots</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('summary') }}"><i class="bi bi-bar-chart me-1"></i>Summary</a>
     </div>
   </div>
 
@@ -20,9 +21,7 @@
               <div class="text-secondary small">Active Alerts</div>
               <div class="display-6 fw-semibold">{{ active_alert_count }}</div>
             </div>
-            <div class="icon-pill text-bg-primary-subtle">
-              <i class="bi bi-bell-fill"></i>
-            </div>
+            <div class="icon-pill text-bg-primary-subtle"><i class="bi bi-bell-fill"></i></div>
           </div>
           <div class="text-secondary small mt-2">Use filters below to focus on a type/room.</div>
         </div>
@@ -36,9 +35,7 @@
               <div class="text-secondary small">Guest Mode</div>
               <div class="h3 mb-0">{{ "ON" if guest_mode else "OFF" }}</div>
             </div>
-            <div class="icon-pill {{ 'text-bg-warning' if guest_mode else 'text-bg-secondary-subtle' }}">
-              <i class="bi bi-people"></i>
-            </div>
+            <div class="icon-pill {{ 'text-bg-warning' if guest_mode else 'text-bg-secondary-subtle' }}"><i class="bi bi-people"></i></div>
           </div>
           <div class="text-secondary small mt-2">When ON, UNKNOWN faces should log as low severity later.</div>
         </div>
@@ -51,14 +48,12 @@
             <div>
               <div class="text-secondary small">Quick Actions</div>
               <div class="d-flex flex-wrap gap-2 mt-2">
-                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('history') }}"><i class="bi bi-clock-history me-1"></i>History</a>
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('faces') }}"><i class="bi bi-person-badge me-1"></i>Faces</a>
                 <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}"><i class="bi bi-list-check me-1"></i>Events</a>
                 <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('health') }}"><i class="bi bi-activity me-1"></i>Health</a>
               </div>
             </div>
-            <div class="icon-pill text-bg-success-subtle">
-              <i class="bi bi-lightning-charge"></i>
-            </div>
+            <div class="icon-pill text-bg-success-subtle"><i class="bi bi-lightning-charge"></i></div>
           </div>
           <div class="text-secondary small mt-2">Try auto-refresh + sound in the UX menu.</div>
         </div>
@@ -170,7 +165,6 @@
 
 {% block page_scripts %}
 <script>
-  // Auto-refresh only for dashboard
   (function() {
     const seconds = parseInt(localStorage.getItem("autoRefreshSeconds") || "0", 10);
     if (!seconds || seconds <= 0) return;

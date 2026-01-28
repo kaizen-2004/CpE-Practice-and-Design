@@ -1,7 +1,7 @@
 import os
 import sqlite3
-from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Any
+from datetime import datetime, timezone, timedelta, date as date_cls
+from typing import Optional, List, Any, Dict, Tuple
 
 # Project root is one level above this file's directory (pi/)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -15,7 +15,6 @@ def _utc_iso(ts: Optional[str] = None) -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 def _parse_iso(ts: str) -> datetime:
-    # datetime.fromisoformat supports "+00:00" offsets
     return datetime.fromisoformat(ts)
 
 def get_conn() -> sqlite3.Connection:
@@ -62,11 +61,36 @@ def init_db() -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ts TEXT NOT NULL,
         type TEXT NOT NULL,          -- FACE_UNKNOWN, FACE_AUTHORIZED, FLAME_SIGNAL, etc.
-        label TEXT,                  -- UNKNOWN/AUTHORIZED/false_alarm/guest_log (UI tags)
+        label TEXT,                  -- UNKNOWN/AUTHORIZED/GUEST/FALSE_ALARM/etc.
         file_relpath TEXT NOT NULL,  -- e.g., "2026-01-27_intruder_unknown_001.png"
         linked_alert_id INTEGER,
         note TEXT,
         FOREIGN KEY(linked_alert_id) REFERENCES alerts(id) ON DELETE SET NULL
+    );
+    """)
+
+    # Faces (UI skeleton for Week 7+; no training required yet)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS faces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        is_authorized INTEGER NOT NULL DEFAULT 1,
+        created_ts TEXT NOT NULL,
+        note TEXT
+    );
+    """)
+
+    # A face can have multiple snapshot samples
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS face_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        face_id INTEGER NOT NULL,
+        snapshot_id INTEGER NOT NULL,
+        ts TEXT NOT NULL,
+        note TEXT,
+        FOREIGN KEY(face_id) REFERENCES faces(id) ON DELETE CASCADE,
+        FOREIGN KEY(snapshot_id) REFERENCES snapshots(id) ON DELETE CASCADE,
+        UNIQUE(face_id, snapshot_id)
     );
     """)
 
@@ -91,12 +115,15 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_type ON snapshots(type);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_alert ON snapshots(linked_alert_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_faces_name ON faces(name);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_face_samples_face ON face_samples(face_id);")
 
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('guest_mode', '0');")
 
     conn.commit()
     conn.close()
 
+# -------------------- Events / Alerts --------------------
 def create_event(event_type: str, source: str, details: str = "", ts: Optional[str] = None) -> int:
     conn = get_conn()
     cur = conn.cursor()
@@ -154,51 +181,6 @@ def get_alert(alert_id: int):
     row = cur.fetchone()
     conn.close()
     return row
-
-def set_setting(key: str, value: str) -> None:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
-        (key, value),
-    )
-    conn.commit()
-    conn.close()
-
-def get_setting(key: str, default: str = "") -> str:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
-    row = cur.fetchone()
-    conn.close()
-    return str(row["value"]) if row else default
-
-def get_guest_mode() -> bool:
-    return get_setting("guest_mode", "0") == "1"
-
-def set_guest_mode(on: bool) -> None:
-    set_setting("guest_mode", "1" if on else "0")
-
-def update_node_seen(node: str, note: str = "", ts: Optional[str] = None) -> None:
-    ts_iso = _utc_iso(ts)
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """INSERT INTO node_status(node, last_seen_ts, note)
-           VALUES(?, ?, ?)
-           ON CONFLICT(node) DO UPDATE SET last_seen_ts=excluded.last_seen_ts, note=excluded.note;""",
-        (node, ts_iso, note or None),
-    )
-    conn.commit()
-    conn.close()
-
-def list_node_status():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT node, last_seen_ts, note FROM node_status ORDER BY node ASC;")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
 def list_active_alerts(limit: int = 200, type_filter: str = "", room_filter: str = "", q: str = "", sort: str = "newest"):
     conn = get_conn()
@@ -266,6 +248,31 @@ def list_history_alerts(limit: int = 500, type_filter: str = "", room_filter: st
     conn.close()
     return rows
 
+def distinct_alert_types():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT type FROM alerts ORDER BY type ASC;")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+def distinct_alert_rooms():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT DISTINCT room FROM alerts WHERE room IS NOT NULL AND room != '' ORDER BY room ASC;")
+    rows = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return rows
+
+def count_active_alerts() -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) as c FROM alerts WHERE status='ACTIVE';")
+    c = int(cur.fetchone()["c"])
+    conn.close()
+    return c
+
+# -------------------- Events --------------------
 def list_recent_events(limit: int = 200, type_filter: str = "", source_filter: str = "", q: str = ""):
     conn = get_conn()
     cur = conn.cursor()
@@ -310,31 +317,53 @@ def events_near_ts(ts: str, window_seconds: int = 600):
     conn.close()
     return rows, start, end
 
-def distinct_alert_types():
+# -------------------- Settings / Health --------------------
+def set_setting(key: str, value: str) -> None:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT DISTINCT type FROM alerts ORDER BY type ASC;")
-    rows = [r[0] for r in cur.fetchall()]
+    cur.execute(
+        "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+def get_setting(key: str, default: str = "") -> str:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return str(row["value"]) if row else default
+
+def get_guest_mode() -> bool:
+    return get_setting("guest_mode", "0") == "1"
+
+def set_guest_mode(on: bool) -> None:
+    set_setting("guest_mode", "1" if on else "0")
+
+def update_node_seen(node: str, note: str = "", ts: Optional[str] = None) -> None:
+    ts_iso = _utc_iso(ts)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO node_status(node, last_seen_ts, note)
+           VALUES(?, ?, ?)
+           ON CONFLICT(node) DO UPDATE SET last_seen_ts=excluded.last_seen_ts, note=excluded.note;""",
+        (node, ts_iso, note or None),
+    )
+    conn.commit()
+    conn.close()
+
+def list_node_status():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT node, last_seen_ts, note FROM node_status ORDER BY node ASC;")
+    rows = cur.fetchall()
     conn.close()
     return rows
 
-def distinct_alert_rooms():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT room FROM alerts WHERE room IS NOT NULL AND room != '' ORDER BY room ASC;")
-    rows = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-def count_active_alerts() -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) as c FROM alerts WHERE status='ACTIVE';")
-    c = int(cur.fetchone()["c"])
-    conn.close()
-    return c
-
-# --- Snapshot helpers ---
+# -------------------- Snapshots --------------------
 def create_snapshot(snapshot_type: str, label: str, file_relpath: str, linked_alert_id: Optional[int] = None,
                     note: str = "", ts: Optional[str] = None) -> int:
     conn = get_conn()
@@ -349,6 +378,18 @@ def create_snapshot(snapshot_type: str, label: str, file_relpath: str, linked_al
     new_id = int(cur.lastrowid)
     conn.close()
     return new_id
+
+def update_snapshot_label(snapshot_id: int, label: str, note: str = "") -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE snapshots SET label = ?, note = COALESCE(NULLIF(?,''), note) WHERE id = ?",
+        (label or None, note, int(snapshot_id)),
+    )
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
 
 def list_snapshots(limit: int = 120, type_filter: str = "", label_filter: str = "", q: str = ""):
     conn = get_conn()
@@ -409,3 +450,159 @@ def distinct_snapshot_labels():
     rows = [r[0] for r in cur.fetchall()]
     conn.close()
     return rows
+
+# -------------------- Faces (UI skeleton) --------------------
+def create_face(name: str, is_authorized: bool = True, note: str = "", ts: Optional[str] = None) -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    ts_iso = _utc_iso(ts)
+    cur.execute(
+        "INSERT INTO faces (name, is_authorized, created_ts, note) VALUES (?, ?, ?, ?)",
+        (name.strip(), 1 if is_authorized else 0, ts_iso, note or None),
+    )
+    conn.commit()
+    new_id = int(cur.lastrowid)
+    conn.close()
+    return new_id
+
+def list_faces():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT f.*,
+               (SELECT COUNT(*) FROM face_samples s WHERE s.face_id = f.id) AS sample_count
+        FROM faces f
+        ORDER BY f.name ASC;
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_face(face_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT f.*,
+               (SELECT COUNT(*) FROM face_samples s WHERE s.face_id = f.id) AS sample_count
+        FROM faces f
+        WHERE f.id = ?;
+    """, (int(face_id),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def delete_face(face_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM faces WHERE id = ?", (int(face_id),))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok
+
+def add_face_sample(face_id: int, snapshot_id: int, note: str = "", ts: Optional[str] = None) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    ts_iso = _utc_iso(ts)
+    try:
+        cur.execute(
+            "INSERT OR IGNORE INTO face_samples (face_id, snapshot_id, ts, note) VALUES (?, ?, ?, ?)",
+            (int(face_id), int(snapshot_id), ts_iso, note or None),
+        )
+        conn.commit()
+        ok = cur.rowcount > 0
+    finally:
+        conn.close()
+    return ok
+
+def list_face_samples(face_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT s.id AS sample_id, s.ts AS sample_ts, s.note AS sample_note,
+               p.id AS snapshot_id, p.ts AS snapshot_ts, p.type AS snapshot_type,
+               p.label AS snapshot_label, p.file_relpath AS file_relpath, p.note AS snapshot_note
+        FROM face_samples s
+        JOIN snapshots p ON p.id = s.snapshot_id
+        WHERE s.face_id = ?
+        ORDER BY s.ts DESC;
+    """, (int(face_id),))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+# -------------------- Daily Summary --------------------
+def _day_start_end(date_str: str) -> Tuple[str, str]:
+    # date_str = 'YYYY-MM-DD' in UTC date for now
+    start = datetime.fromisoformat(date_str + "T00:00:00+00:00")
+    end = start + timedelta(days=1)
+    return start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
+
+def summary_for_date(date_str: str) -> Dict[str, Any]:
+    """Compute counts for a given UTC date (YYYY-MM-DD)."""
+    start, end = _day_start_end(date_str)
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Alerts by type/status
+    cur.execute("""
+        SELECT type, status, COUNT(*) AS c
+        FROM alerts
+        WHERE ts >= ? AND ts < ?
+        GROUP BY type, status
+        ORDER BY type, status;
+    """, (start, end))
+    alerts_rows = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT status, COUNT(*) AS c
+        FROM alerts
+        WHERE ts >= ? AND ts < ?
+        GROUP BY status
+        ORDER BY status;
+    """, (start, end))
+    alerts_status = [dict(r) for r in cur.fetchall()]
+
+    # Events by type
+    cur.execute("""
+        SELECT type, COUNT(*) AS c
+        FROM events
+        WHERE ts >= ? AND ts < ?
+        GROUP BY type
+        ORDER BY c DESC, type ASC;
+    """, (start, end))
+    events_rows = [dict(r) for r in cur.fetchall()]
+
+    # Snapshots by type/label
+    cur.execute("""
+        SELECT type, IFNULL(label,'') AS label, COUNT(*) AS c
+        FROM snapshots
+        WHERE ts >= ? AND ts < ?
+        GROUP BY type, IFNULL(label,'')
+        ORDER BY type ASC, label ASC;
+    """, (start, end))
+    snaps_rows = [dict(r) for r in cur.fetchall()]
+
+    # Top rooms for alerts
+    cur.execute("""
+        SELECT IFNULL(room,'') AS room, COUNT(*) AS c
+        FROM alerts
+        WHERE ts >= ? AND ts < ? AND room IS NOT NULL AND room != ''
+        GROUP BY room
+        ORDER BY c DESC, room ASC
+        LIMIT 10;
+    """, (start, end))
+    rooms_rows = [dict(r) for r in cur.fetchall()]
+
+    conn.close()
+
+    return {
+        "date": date_str,
+        "start": start,
+        "end": end,
+        "alerts_by_type_status": alerts_rows,
+        "alerts_by_status": alerts_status,
+        "events_by_type": events_rows,
+        "snapshots_by_type_label": snaps_rows,
+        "top_rooms": rooms_rows,
+    }

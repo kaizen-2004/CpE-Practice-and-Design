@@ -1,2 +1,0 @@
-Flask>=2.3,<4
-opencv-contrib-python>=4.8

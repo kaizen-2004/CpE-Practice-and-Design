@@ -606,3 +606,15 @@ def summary_for_date(date_str: str) -> Dict[str, Any]:
         "snapshots_by_type_label": snaps_rows,
         "top_rooms": rooms_rows,
     }
+
+
+# -------------------- Alert ↔ Snapshot helpers --------------------
+def attach_snapshot_to_alert(alert_id: int, snapshot_relpath: str) -> bool:
+    """Ensure alerts.snapshot_path points to snapshots/<relpath>. Returns True if updated."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE alerts SET snapshot_path = ? WHERE id = ?", (f"snapshots/{snapshot_relpath}", int(alert_id)))
+    conn.commit()
+    ok = cur.rowcount > 0
+    conn.close()
+    return ok

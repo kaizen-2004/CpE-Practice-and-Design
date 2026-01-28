@@ -2,6 +2,9 @@ from flask import Flask, redirect, render_template, request, url_for, flash, sen
 import csv
 import io
 from datetime import datetime, timezone, timedelta
+import os
+import sys
+import subprocess
 
 from db import (
     init_db,
@@ -38,9 +41,15 @@ from db import (
     # summary
     summary_for_date,
 )
+from vision_utils import export_face_sample_from_snapshot
 
 app = Flask(__name__)
 app.secret_key = "dev-only-change-me"  # change later for real deployments
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATASET_DIR = os.path.join(PROJECT_ROOT, "data", "faces")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+
 
 init_db()
 
@@ -167,6 +176,22 @@ def create_face_from_snapshot(snapshot_id: int):
     face_id = create_face(name=name, is_authorized=True, note=note)
     add_face_sample(face_id, snapshot_id, note="added from snapshot")
 
+    # Export a cropped face ROI sample into the LBPH dataset folder
+    try:
+        os.makedirs(DATASET_DIR, exist_ok=True)
+        person_dir = os.path.join(DATASET_DIR, name.strip())
+        from db import get_snapshot, SNAPSHOT_DIR
+        snap = get_snapshot(snapshot_id)
+        if snap:
+            snap_abs = os.path.join(SNAPSHOT_DIR, snap["file_relpath"])
+            out_name = f"{snapshot_id}_{snap['ts'].replace(':','-')}.png"
+            out_path = export_face_sample_from_snapshot(snap_abs, person_dir, out_name)
+            if out_path is None:
+                flash("⚠️ Face ROI not found in snapshot (saved face record, but dataset sample not created).", "warning")
+    except Exception:
+        flash("⚠️ Could not export dataset sample (you can still add samples later).", "warning")
+
+
     # Optional convenience: also label the snapshot as AUTHORIZED
     update_snapshot_label(snapshot_id, label="AUTHORIZED")
 
@@ -180,6 +205,20 @@ def add_sample_to_face(face_id: int):
         flash("Invalid snapshot id.", "warning")
         return redirect(url_for("face_details", face_id=face_id))
     ok = add_face_sample(face_id, int(snapshot_id), note="added via UI")
+
+    # Also export ROI sample into dataset folder under this face name
+    try:
+        face = get_face(face_id)
+        from db import get_snapshot, SNAPSHOT_DIR
+        snap = get_snapshot(int(snapshot_id))
+        if face and snap:
+            person_dir = os.path.join(DATASET_DIR, face["name"].strip())
+            snap_abs = os.path.join(SNAPSHOT_DIR, snap["file_relpath"])
+            out_name = f"{snapshot_id}_{snap['ts'].replace(':','-')}.png"
+            export_face_sample_from_snapshot(snap_abs, person_dir, out_name)
+    except Exception:
+        pass
+
     if ok:
         flash(f"Added Snapshot #{snapshot_id} as a sample.", "success")
     else:
@@ -311,6 +350,29 @@ def summary_html_export():
     resp = Response(html, mimetype="text/html; charset=utf-8")
     resp.headers["Content-Disposition"] = f'attachment; filename="summary_{date_str}.html"'
     return resp
+
+
+@app.post("/faces/retrain")
+def faces_retrain():
+    """
+    Train LBPH model from data/faces/<person> samples.
+    Runs as a subprocess so errors don't crash Flask.
+    """
+    os.makedirs(DATASET_DIR, exist_ok=True)
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
+    cmd = [sys.executable, os.path.join(PROJECT_ROOT, "pi", "train_lbph.py")]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            flash("✅ LBPH retraining complete. Vision runtime will auto-reload the new model.", "success")
+        else:
+            msg = (res.stdout + "\n" + res.stderr).strip()
+            flash("❌ Retrain failed:\n" + (msg[:900] + ("…" if len(msg) > 900 else "")), "warning")
+    except Exception as e:
+        flash(f"❌ Retrain error: {e}", "warning")
+
+    return redirect(url_for("faces"))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

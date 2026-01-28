@@ -65,7 +65,11 @@
           </table>
         </div>
       {% endif %}
-      <div class="text-secondary small mt-3">Later you’ll add “Retrain LBPH” button here (Week 7+).</div>
+      <div class="text-secondary small mt-3"><form method="post" action="{{ url_for('faces_retrain') }}" class="d-inline">
+  <button class="btn btn-outline-primary" type="submit">
+    <i class="bi bi-cpu me-1"></i>Retrain LBPH
+  </button>
+</form></div>
     </div>
   </div>
 {% endblock %}

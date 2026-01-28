@@ -1,2 +1,2 @@
 Flask>=2.3,<4
-opencv-python>=4.8
+opencv-contrib-python>=4.8

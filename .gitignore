@@ -6,3 +6,5 @@ db/thesis.db
 models/
 raw_logs/
 reports/
+.env
+*.log

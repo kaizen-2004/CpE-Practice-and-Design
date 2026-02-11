@@ -1,0 +1,5 @@
+To activate ESP32 CAM:
+Set the stream URLs when ready:
+
+export OUTDOOR_URL="http://OUTDOOR_IP:81/stream"
+export INDOOR_URL="http://INDOOR_IP:81/stream"

@@ -3,7 +3,7 @@ import random
 from db import init_db, create_alert, list_active_alerts
 
 ALERT_TYPES = ["INTRUDER", "FIRE", "DOOR_FORCE"]
-ROOMS = ["Door", "Living Area", "Kitchen", "Bedroom 1", "Bedroom 2"]
+ROOMS = ["Door Entrance Area", "Living Room"]
 
 def main():
     parser = argparse.ArgumentParser(description="Insert fake ACTIVE alerts into SQLite and print active alerts.")

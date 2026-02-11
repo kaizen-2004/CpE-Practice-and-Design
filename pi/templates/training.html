@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="d-flex flex-wrap justify-content-between gap-2 align-items-end mb-3">
+    <div>
+      <h3 class="page-title">Add/Enroll a Person</h3>
+      <div class="page-subtitle">Add face photos and fire/no-fire photos so the system can learn.</div>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('training') }}">Refresh</a>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h5 class="mb-0">Add Face Photos (Use your camera)</h5>
+            <span class="badge text-bg-secondary">Goal: {{ face_target }} photos</span>
+          </div>
+          <div class="small text-secondary mb-3">Minimum needed: {{ face_min }} photos per person.</div>
+
+          <div class="row g-2 mb-2">
+            <div class="col-12 col-md-7">
+              <label class="form-label small mb-1">Person's Name</label>
+              <input id="personName" class="form-control" list="knownPeople" placeholder="e.g., Steve" autocomplete="off">
+              <datalist id="knownPeople">
+                {% for row in face_rows %}
+                  <option value="{{ row['name'] }}"></option>
+                {% endfor %}
+              </datalist>
+            </div>
+            <div class="col-6 col-md-2 d-grid">
+              <button id="startCamBtn" class="btn btn-outline-secondary mt-md-4" type="button">Turn Camera On</button>
+            </div>
+            <div class="col-6 col-md-3 d-grid">
+              <button id="captureBtn" class="btn btn-primary mt-md-4" type="button">Take Photo</button>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-12 col-md-7">
+              <label class="form-label small mb-1">Other Camera Source</label>
+              <input id="piSource" class="form-control" value="0" placeholder="0 or http://IP:81/stream">
+            </div>
+            <div class="col-12 col-md-5 d-grid">
+              <button id="capturePiBtn" class="btn btn-outline-secondary mt-md-4" type="button">Take Photo (Other Camera)</button>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-12 col-md-6 d-grid">
+              <button id="autoBtn" class="btn btn-outline-primary" type="button">Auto Take Photos</button>
+            </div>
+            <div class="col-12 col-md-6 d-grid">
+              <form method="post" action="{{ url_for('training_face_train') }}">
+                <button class="btn btn-success w-100" type="submit">Train Face Recognition</button>
+              </form>
+            </div>
+          </div>
+
+          <video id="faceVideo" class="training-video mb-2" autoplay muted playsinline></video>
+          <canvas id="faceCanvas" class="d-none"></canvas>
+
+          <div id="faceStatus" class="small text-secondary">Camera is off.</div>
+          <div class="small text-secondary mt-1">Tip: look straight, then left/right. Use good lighting and avoid blur.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h5>Face Photo Progress</h5>
+          {% if face_rows|length == 0 %}
+            <div class="text-secondary">No photos yet.</div>
+          {% else %}
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr><th>Name</th><th>Count</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {% for row in face_rows %}
+                    <tr>
+                      <td>{{ row["name"] }}</td>
+                      <td>{{ row["count"] }}</td>
+                      <td>
+                        {% if row["target_reached"] %}
+                          <span class="badge text-bg-success">Target Reached</span>
+                        {% elif row["ready"] %}
+                          <span class="badge text-bg-primary">Trainable</span>
+                        {% else %}
+                          <span class="badge text-bg-warning">Need More</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5>Fire Training</h5>
+      <div class="row g-3 mb-3">
+        <div class="col-12 col-md-6">
+          <div class="p-3 border rounded-3 bg-light-subtle">
+            <div class="small text-secondary">Fire photos</div>
+            <div class="h4 mb-0">{{ fire_stats["flame_count"] }}</div>
+          </div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="p-3 border rounded-3 bg-light-subtle">
+            <div class="small text-secondary">No-fire photos</div>
+            <div class="h4 mb-0">{{ fire_stats["non_flame_count"] }}</div>
+          </div>
+        </div>
+      </div>
+
+      <form method="post" action="{{ url_for('training_fire_upload') }}" enctype="multipart/form-data" class="row g-2 align-items-end mb-3">
+        <div class="col-12 col-md-3">
+          <label class="form-label small mb-1">Type</label>
+          <select name="label" class="form-select" required>
+            <option value="flame">flame</option>
+            <option value="non_flame">non_flame</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-7">
+          <label class="form-label small mb-1">Photos</label>
+          <input name="images" type="file" class="form-control" accept="image/*" multiple required>
+        </div>
+        <div class="col-12 col-md-2 d-grid">
+          <button class="btn btn-outline-secondary" type="submit">Upload Photos</button>
+        </div>
+      </form>
+
+      <div class="d-flex flex-wrap gap-2 align-items-center">
+        <form method="post" action="{{ url_for('training_fire_train') }}">
+          <button class="btn btn-success" type="submit">Train Fire Detection</button>
+        </form>
+        {% if fire_model %}
+          <span class="small text-secondary">
+            Last model: {{ fire_model.get("trained_ts", "unknown") }} |
+            threshold={{ fire_model.get("ratio_threshold", "n/a") }}
+          </span>
+        {% else %}
+          <span class="small text-secondary">No fire training yet.</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+  const personInput = document.getElementById("personName");
+  const faceVideo = document.getElementById("faceVideo");
+  const faceCanvas = document.getElementById("faceCanvas");
+  const startCamBtn = document.getElementById("startCamBtn");
+  const captureBtn = document.getElementById("captureBtn");
+  const capturePiBtn = document.getElementById("capturePiBtn");
+  const piSource = document.getElementById("piSource");
+  const autoBtn = document.getElementById("autoBtn");
+  const faceStatus = document.getElementById("faceStatus");
+
+  let faceStream = null;
+  let autoTimer = null;
+  let autoRunning = false;
+
+  function setStatus(text, isError) {
+    faceStatus.textContent = text;
+    faceStatus.classList.toggle("text-danger", !!isError);
+    faceStatus.classList.toggle("text-secondary", !isError);
+  }
+
+  async function startCamera() {
+    if (faceStream) return true;
+    try {
+      faceStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false
+      });
+      faceVideo.srcObject = faceStream;
+      setStatus("Camera is on.");
+      return true;
+    } catch (err) {
+      setStatus("Can't open the camera. Please allow access.", true);
+      return false;
+    }
+  }
+
+  function stopAutoCapture() {
+    autoRunning = false;
+    if (autoTimer) {
+      clearInterval(autoTimer);
+      autoTimer = null;
+    }
+    autoBtn.textContent = "Auto Take Photos";
+    autoBtn.classList.remove("btn-danger");
+    autoBtn.classList.add("btn-outline-primary");
+  }
+
+  function handleCaptureData(data) {
+    const statusText = `${data.name}: ${data.count} photos | min ${data.min_required} | goal ${data.target}`;
+    setStatus(statusText, false);
+    if (data.target_reached) {
+      stopAutoCapture();
+    }
+  }
+
+  async function captureOne() {
+    const name = (personInput.value || "").trim();
+    if (!name) {
+      setStatus("Please enter a name first.", true);
+      return { ok: false };
+    }
+    const started = await startCamera();
+    if (!started) return { ok: false };
+
+    const width = faceVideo.videoWidth || 640;
+    const height = faceVideo.videoHeight || 480;
+    faceCanvas.width = width;
+    faceCanvas.height = height;
+    const ctx = faceCanvas.getContext("2d");
+    ctx.drawImage(faceVideo, 0, 0, width, height);
+    const image = faceCanvas.toDataURL("image/jpeg", 0.9);
+
+    try {
+      const resp = await fetch("{{ url_for('training_face_capture') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, image })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        setStatus(data.error || "Photo failed.", true);
+        return { ok: false };
+      }
+      handleCaptureData(data);
+      return data;
+    } catch (err) {
+      setStatus("Could not save photo.", true);
+      return { ok: false };
+    }
+  }
+
+  async function captureFromPiSource() {
+    const name = (personInput.value || "").trim();
+    if (!name) {
+      setStatus("Please enter a name first.", true);
+      return;
+    }
+    try {
+      const resp = await fetch("{{ url_for('training_face_capture_pi') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, source: (piSource.value || "0").trim() })
+      });
+      const data = await resp.json();
+      if (!resp.ok || !data.ok) {
+        setStatus(data.error || "Photo failed.", true);
+        return;
+      }
+      handleCaptureData(data);
+    } catch (err) {
+      setStatus("Other camera request failed.", true);
+    }
+  }
+
+  async function loadStatus() {
+    const name = (personInput.value || "").trim();
+    if (!name) {
+      setStatus("Camera is off.");
+      return;
+    }
+    try {
+      const resp = await fetch(`{{ url_for('training_face_status') }}?name=${encodeURIComponent(name)}`);
+      const data = await resp.json();
+      if (resp.ok && data.ok) {
+        setStatus(`${data.name}: ${data.count} photos | min ${data.min_required} | goal ${data.target}`, false);
+      }
+    } catch (err) {}
+  }
+
+  startCamBtn.addEventListener("click", startCamera);
+  captureBtn.addEventListener("click", captureOne);
+  capturePiBtn.addEventListener("click", captureFromPiSource);
+  personInput.addEventListener("change", loadStatus);
+  personInput.addEventListener("blur", loadStatus);
+
+  autoBtn.addEventListener("click", async () => {
+    if (autoRunning) {
+      stopAutoCapture();
+      return;
+    }
+    const started = await startCamera();
+    if (!started) return;
+
+    autoRunning = true;
+    autoBtn.textContent = "Stop Auto";
+    autoBtn.classList.remove("btn-outline-primary");
+    autoBtn.classList.add("btn-danger");
+
+    autoTimer = setInterval(async () => {
+      if (!autoRunning) return;
+      const data = await captureOne();
+      if (data.target_reached) {
+        stopAutoCapture();
+      }
+    }, 900);
+  });
+
+  window.addEventListener("beforeunload", () => {
+    stopAutoCapture();
+    if (faceStream) {
+      faceStream.getTracks().forEach(track => track.stop());
+      faceStream = null;
+    }
+  });
+</script>
+{% endblock %}

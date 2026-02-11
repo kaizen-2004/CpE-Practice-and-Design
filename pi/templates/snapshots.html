@@ -2,12 +2,12 @@
 {% block content %}
   <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
     <div>
-      <h3 class="mb-1">Snapshots</h3>
-      <div class="text-secondary">Thumbnails + filters. Later becomes evidence for Chapter 4.</div>
+      <h3 class="mb-1">Photos</h3>
+      <div class="text-secondary">Saved photos you can review and tag.</div>
     </div>
     <div class="d-flex gap-2">
       <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('faces') }}"><i class="bi bi-person-badge me-1"></i>Faces</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('faces') }}"><i class="bi bi-person-badge me-1"></i>People</a>
     </div>
   </div>
 
@@ -15,7 +15,7 @@
     <div class="card-body">
       <form method="get" class="row g-2 align-items-end">
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">Type</label>
+          <label class="form-label small text-secondary mb-1">Kind</label>
           <select name="type" class="form-select form-select-sm">
             <option value="">All</option>
             {% for t in types %}
@@ -24,7 +24,7 @@
           </select>
         </div>
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">Label</label>
+          <label class="form-label small text-secondary mb-1">Tag</label>
           <select name="label" class="form-select form-select-sm">
             <option value="">All</option>
             {% for l in labels %}
@@ -33,8 +33,8 @@
           </select>
         </div>
         <div class="col-12 col-md-4">
-          <label class="form-label small text-secondary mb-1">Search</label>
-          <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="filename / note / label">
+          <label class="form-label small text-secondary mb-1">Find</label>
+          <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="name or notes">
         </div>
         <div class="col-12 col-md-2 d-flex gap-2">
           <button class="btn btn-sm btn-primary w-100" type="submit"><i class="bi bi-funnel me-1"></i>Apply</button>
@@ -45,7 +45,7 @@
   </div>
 
   {% if snapshots|length == 0 %}
-    <div class="text-secondary">No snapshots yet. Run <span class="font-monospace">python pi/fake_snapshots.py --n 12 --link-alerts</span>.</div>
+    <div class="text-secondary">No photos yet.</div>
   {% else %}
     <div class="row g-3">
       {% for s in snapshots %}
@@ -67,7 +67,7 @@
                 <div class="mt-2">
                   <a class="badge text-bg-primary-subtle border border-primary-subtle text-decoration-none"
                      href="{{ url_for('alert_details', alert_id=s['linked_alert_id']) }}">
-                    Linked Alert #{{ s["linked_alert_id"] }}
+                    Related Alert #{{ s["linked_alert_id"] }}
                   </a>
                 </div>
               {% endif %}
@@ -77,7 +77,7 @@
             </div>
             <div class="card-footer bg-body">
               <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('snapshot_details', snapshot_id=s['id']) }}">
-                <i class="bi bi-eye me-1"></i>View & Tag
+                <i class="bi bi-eye me-1"></i>Open Photo
               </a>
             </div>
           </div>

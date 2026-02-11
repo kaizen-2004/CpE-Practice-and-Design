@@ -12,7 +12,7 @@ TYPES = [
     ("FACE_AUTHORIZED", "AUTHORIZED"),
     ("FLAME_SIGNAL", "FLAME"),
 ]
-ROOMS = ["Door", "Living Area", "Kitchen"]
+ROOMS = ["Door Entrance Area", "Living Room"]
 
 def make_image(text: str, subtitle: str) -> np.ndarray:
     img = np.zeros((480, 640, 3), dtype=np.uint8)

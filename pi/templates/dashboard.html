@@ -1,155 +1,192 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+  <div class="d-flex flex-wrap justify-content-between gap-2 align-items-end mb-3">
     <div>
-      <h3 class="mb-1">Dashboard</h3>
-      <div class="text-secondary">ACTIVE alerts stay visible until ACK/RESOLVED.</div>
+      <h3 class="page-title">Dashboard</h3>
+      <div class="page-subtitle">Quick view of your home: alerts, sensors, and cameras.</div>
     </div>
     <div class="d-flex gap-2">
-      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-image me-1"></i>Snapshots</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('summary') }}"><i class="bi bi-bar-chart me-1"></i>Summary</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Refresh</a>
+      <a class="btn btn-outline-primary" href="{{ url_for('events') }}">View Activity</a>
+      <a class="btn btn-primary" href="{{ url_for('training') }}">Training</a>
     </div>
   </div>
 
-  <div class="row g-3 mb-3">
-    <div class="col-12 col-lg-4">
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center">
-            <div>
-              <div class="text-secondary small">Active Alerts</div>
-              <div class="display-6 fw-semibold">{{ active_alert_count }}</div>
-            </div>
-            <div class="icon-pill text-bg-primary-subtle"><i class="bi bi-bell-fill"></i></div>
-          </div>
-          <div class="text-secondary small mt-2">Use filters below to focus on a type/room.</div>
-        </div>
+  <div class="row g-3 mb-3 fade-in">
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Current Alerts</div>
+        <div class="kpi-value">{{ active_alert_count }}</div>
+        <div class="kpi-sub">Mark each alert as fixed when done.</div>
       </div>
     </div>
-    <div class="col-12 col-lg-4">
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center">
-            <div>
-              <div class="text-secondary small">Guest Mode</div>
-              <div class="h3 mb-0">{{ "ON" if guest_mode else "OFF" }}</div>
-            </div>
-            <div class="icon-pill {{ 'text-bg-warning' if guest_mode else 'text-bg-secondary-subtle' }}"><i class="bi bi-people"></i></div>
-          </div>
-          <div class="text-secondary small mt-2">When ON, UNKNOWN faces should log as low severity later.</div>
-        </div>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Sensors Working</div>
+        <div class="kpi-value">{{ sensors_online }}/{{ sensors_total }}</div>
+        <div class="kpi-sub">Smoke + door sensors.</div>
       </div>
     </div>
-    <div class="col-12 col-lg-4">
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <div class="d-flex justify-content-between align-items-center">
-            <div>
-              <div class="text-secondary small">Quick Actions</div>
-              <div class="d-flex flex-wrap gap-2 mt-2">
-                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('faces') }}"><i class="bi bi-person-badge me-1"></i>Faces</a>
-                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}"><i class="bi bi-list-check me-1"></i>Events</a>
-                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('health') }}"><i class="bi bi-activity me-1"></i>Health</a>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Cameras Working</div>
+        <div class="kpi-value">{{ cameras_online }}/{{ cameras_total }}</div>
+        <div class="kpi-sub">Indoor and outdoor cameras.</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Guest Mode</div>
+        <div class="kpi-value">{{ "ON" if guest_mode else "OFF" }}</div>
+        <div class="kpi-sub">Pauses intruder alerts while guests are around.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3 fade-in">
+    {% for card in room_cards %}
+      <div class="col-12 col-lg-6">
+        <div class="card hover-lift h-100">
+          <div class="card-body">
+            <div class="room-card-header">
+              <div class="room-title">{{ card.room }}</div>
+              <span class="evidence-pill">Room status</span>
+            </div>
+            <div class="row g-3">
+              <div class="col-12 col-md-6">
+                <div class="small text-secondary text-uppercase">Sensors</div>
+                {% if card.sensors|length == 0 %}
+                  <div class="text-secondary small">No sensors assigned.</div>
+                {% else %}
+                  {% for s in card.sensors %}
+                    <div class="status-row">
+                      <div>
+                        <span class="status-dot {{ 'status-online' if s.online else 'status-offline' }}"></span>
+                        {{ s.label }}
+                      </div>
+                      <div class="mono small">{{ s.last_seen_ts or "-" }}</div>
+                    </div>
+                  {% endfor %}
+                {% endif %}
+              </div>
+              <div class="col-12 col-md-6">
+                <div class="small text-secondary text-uppercase">Cameras</div>
+                {% if card.cameras|length == 0 %}
+                  <div class="text-secondary small">No cameras assigned.</div>
+                {% else %}
+                  {% for c in card.cameras %}
+                    <div class="status-row">
+                      <div>
+                        <span class="status-dot {{ 'status-online' if c.online else 'status-offline' }}"></span>
+                        {{ c.label }}
+                      </div>
+                      <div class="mono small">{{ c.last_seen_ts or "-" }}</div>
+                    </div>
+                  {% endfor %}
+                {% endif %}
               </div>
             </div>
-            <div class="icon-pill text-bg-success-subtle"><i class="bi bi-lightning-charge"></i></div>
+
+            <div class="mt-3">
+              <div class="small text-secondary text-uppercase mb-2">Latest Signals</div>
+              <div class="status-row">
+                <div>Smoke Alert</div>
+                <div class="mono small">{{ card.latest_smoke.ts if card.latest_smoke else "-" }}</div>
+              </div>
+              <div class="status-row">
+                <div>Flame Alert</div>
+                <div class="mono small">{{ card.latest_flame.ts if card.latest_flame else "-" }}</div>
+              </div>
+              <div class="status-row">
+                <div>Door Force</div>
+                <div class="mono small">{{ card.latest_door_force.ts if card.latest_door_force else "-" }}</div>
+              </div>
+              <div class="status-row">
+                <div>Unknown Person</div>
+                <div class="mono small">{{ card.latest_unknown.ts if card.latest_unknown else "-" }}</div>
+              </div>
+            </div>
           </div>
-          <div class="text-secondary small mt-2">Try auto-refresh + sound in the UX menu.</div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="card shadow-sm mb-3 fade-in">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Live Camera View</h5>
+        <span class="text-secondary small">Feeds will appear once cameras are connected.</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary text-uppercase mb-2">Outdoor View</div>
+          {% if outdoor_url %}
+            <img class="camera-feed" src="{{ outdoor_url }}" alt="Outdoor camera feed">
+          {% else %}
+            <div class="camera-placeholder">Outdoor camera not connected yet.</div>
+          {% endif %}
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary text-uppercase mb-2">Indoor View</div>
+          {% if indoor_url %}
+            <img class="camera-feed" src="{{ indoor_url }}" alt="Indoor camera feed">
+          {% else %}
+            <div class="camera-placeholder">Indoor camera not connected yet.</div>
+          {% endif %}
         </div>
       </div>
     </div>
   </div>
 
-  <div class="card shadow-sm">
+  <div class="card shadow-sm mb-3 fade-in">
     <div class="card-body">
-      <div class="d-flex flex-wrap gap-2 justify-content-between align-items-center">
-        <h5 class="mb-0">ACTIVE Alerts</h5>
-        <form method="get" class="row g-2 align-items-end">
-          <div class="col-12 col-md-auto">
-            <label class="form-label small text-secondary mb-1">Type</label>
-            <select name="type" class="form-select form-select-sm">
-              <option value="">All</option>
-              {% for t in types %}
-                <option value="{{ t }}" {{ "selected" if t==type_filter else "" }}>{{ t }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-12 col-md-auto">
-            <label class="form-label small text-secondary mb-1">Room</label>
-            <select name="room" class="form-select form-select-sm">
-              <option value="">All</option>
-              {% for r in rooms %}
-                <option value="{{ r }}" {{ "selected" if r==room_filter else "" }}>{{ r }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-12 col-md-auto">
-            <label class="form-label small text-secondary mb-1">Sort</label>
-            <select name="sort" class="form-select form-select-sm">
-              <option value="newest" {{ "selected" if sort=="newest" else "" }}>Newest</option>
-              <option value="severity" {{ "selected" if sort=="severity" else "" }}>Severity</option>
-            </select>
-          </div>
-          <div class="col-12 col-md-auto">
-            <label class="form-label small text-secondary mb-1">Search</label>
-            <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="details / room / type">
-          </div>
-          <div class="col-12 col-md-auto">
-            <button class="btn btn-sm btn-primary" type="submit"><i class="bi bi-funnel me-1"></i>Apply</button>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard') }}">Clear</a>
-          </div>
-        </form>
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Current Alerts</h5>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('history') }}">View Past Alerts</a>
       </div>
-
-      <hr class="my-3">
-
       {% if alerts|length == 0 %}
-        <div class="text-secondary">No active alerts.</div>
+        <div class="text-secondary">No current alerts.</div>
       {% else %}
         <div class="table-responsive">
           <table class="table table-hover align-middle mb-0">
             <thead>
               <tr>
-                <th style="width: 90px;">ID</th>
-                <th>Type</th>
-                <th>Room</th>
-                <th style="width: 120px;">Severity</th>
-                <th style="width: 220px;">Created</th>
-                <th>Details</th>
-                <th style="width: 290px;">Actions</th>
+                <th>ID</th>
+                <th>Alert</th>
+                <th>Area</th>
+                <th>Level</th>
+                <th>Time</th>
+                <th>Notes</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {% for a in alerts %}
               <tr>
-                <td class="font-monospace">#{{ a["id"] }}</td>
-                <td><span class="badge text-bg-dark-subtle border">{{ a["type"] }}</span></td>
+                <td class="mono">#{{ a["id"] }}</td>
+                <td><span class="badge text-bg-secondary">{{ a["type"] }}</span></td>
                 <td>{{ a["room"] or "-" }}</td>
                 <td>
                   {% if a["severity"]|int >= 3 %}
-                    <span class="badge text-bg-danger">High</span>
+                    <span class="alert-badge alert-high">High</span>
                   {% elif a["severity"]|int == 2 %}
-                    <span class="badge text-bg-warning">Med</span>
+                    <span class="alert-badge alert-med">Med</span>
                   {% else %}
-                    <span class="badge text-bg-success">Low</span>
+                    <span class="alert-badge alert-low">Low</span>
                   {% endif %}
                 </td>
-                <td class="font-monospace small">{{ a["ts"] }}</td>
+                <td class="mono small">{{ a["ts"] }}</td>
                 <td class="text-break">{{ a["details"] or "" }}</td>
                 <td>
                   <div class="d-flex gap-2 flex-wrap">
-                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">
-                      <i class="bi bi-eye me-1"></i>Details
-                    </a>
+                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">Details</a>
                     <form method="post" action="{{ url_for('ack', alert_id=a['id']) }}" class="d-flex gap-2">
-                      <select name="status" class="form-select form-select-sm" style="max-width: 140px;">
-                        <option value="ACK">ACK</option>
-                        <option value="RESOLVED">RESOLVED</option>
+                      <select name="status" class="form-select form-select-sm">
+                        <option value="ACK">Acknowledge</option>
+                        <option value="RESOLVED">Resolved</option>
                       </select>
-                      <button class="btn btn-sm btn-outline-primary" type="submit">
-                        <i class="bi bi-check2-circle me-1"></i>Submit
-                      </button>
+                      <button class="btn btn-sm btn-outline-primary" type="submit">Submit</button>
                     </form>
                   </div>
                 </td>
@@ -161,14 +198,34 @@
       {% endif %}
     </div>
   </div>
-{% endblock %}
 
-{% block page_scripts %}
-<script>
-  (function() {
-    const seconds = parseInt(localStorage.getItem("autoRefreshSeconds") || "0", 10);
-    if (!seconds || seconds <= 0) return;
-    setTimeout(() => location.reload(), seconds * 1000);
-  })();
-</script>
+  <div class="card shadow-sm fade-in">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Recent Activity</h5>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}">View All Activity</a>
+      </div>
+      {% if recent_events|length == 0 %}
+        <div class="text-secondary">No activity yet.</div>
+      {% else %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr><th>What</th><th>Device</th><th>Area</th><th>Time</th></tr>
+            </thead>
+            <tbody>
+              {% for e in recent_events %}
+                <tr>
+                  <td>{{ e["type"] }}</td>
+                  <td>{{ e["source"] }}</td>
+                  <td>{{ e["room"] or "-" }}</td>
+                  <td class="mono small">{{ e["ts"] }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
 {% endblock %}

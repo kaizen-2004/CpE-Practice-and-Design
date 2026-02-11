@@ -17,6 +17,12 @@ def _utc_iso(ts: Optional[str] = None) -> str:
 def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table});")
+    cols = [row[1] if isinstance(row, tuple) else row["name"] for row in cur.fetchall()]
+    return column in cols
+
 def get_conn() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -36,10 +42,14 @@ def init_db() -> None:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         type TEXT NOT NULL,
         source TEXT NOT NULL,
+        room TEXT,
         details TEXT,
         ts TEXT NOT NULL
     );
     """)
+
+    if not _column_exists(conn, "events", "room"):
+        cur.execute("ALTER TABLE events ADD COLUMN room TEXT;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS alerts (
@@ -69,7 +79,7 @@ def init_db() -> None:
     );
     """)
 
-    # Faces (UI skeleton for Week 7+; no training required yet)
+    # Faces (UI skeleton; training optional)
     cur.execute("""
     CREATE TABLE IF NOT EXISTS faces (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +122,7 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status_ts ON alerts(status, ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_type_ts ON alerts(type, ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_events_room_ts ON events(room, ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_ts ON snapshots(ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_type ON snapshots(type);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_alert ON snapshots(linked_alert_id);")
@@ -124,13 +135,13 @@ def init_db() -> None:
     conn.close()
 
 # -------------------- Events / Alerts --------------------
-def create_event(event_type: str, source: str, details: str = "", ts: Optional[str] = None) -> int:
+def create_event(event_type: str, source: str, details: str = "", ts: Optional[str] = None, room: str = "") -> int:
     conn = get_conn()
     cur = conn.cursor()
     ts_iso = _utc_iso(ts)
     cur.execute(
-        "INSERT INTO events (type, source, details, ts) VALUES (?, ?, ?, ?)",
-        (event_type, source, details, ts_iso),
+        "INSERT INTO events (type, source, room, details, ts) VALUES (?, ?, ?, ?, ?)",
+        (event_type, source, room or None, details, ts_iso),
     )
     conn.commit()
     new_id = int(cur.lastrowid)
@@ -215,6 +226,64 @@ def list_active_alerts(limit: int = 200, type_filter: str = "", room_filter: str
     conn.close()
     return rows
 
+def get_latest_event(event_type: str = "", source: str = "", room: str = ""):
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = "SELECT * FROM events WHERE 1=1"
+    params: List[Any] = []
+    if event_type:
+        sql += " AND type = ?"
+        params.append(event_type)
+    if source:
+        sql += " AND source = ?"
+        params.append(source)
+    if room:
+        sql += " AND room = ?"
+        params.append(room)
+    sql += " ORDER BY ts DESC LIMIT 1"
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def has_recent_event(event_type: str, source: str = "", room: str = "", within_seconds: int = 120, ts: Optional[str] = None) -> bool:
+    ts_iso = _utc_iso(ts)
+    center = _parse_iso(ts_iso)
+    start = (center - timedelta(seconds=within_seconds)).isoformat(timespec="seconds")
+    end = (center + timedelta(seconds=within_seconds)).isoformat(timespec="seconds")
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = "SELECT 1 FROM events WHERE type = ? AND ts >= ? AND ts <= ?"
+    params: List[Any] = [event_type, start, end]
+    if source:
+        sql += " AND source = ?"
+        params.append(source)
+    if room:
+        sql += " AND room = ?"
+        params.append(room)
+    sql += " LIMIT 1"
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+def has_recent_alert(alert_type: str, within_seconds: int = 120, ts: Optional[str] = None, room: str = "") -> bool:
+    ts_iso = _utc_iso(ts)
+    center = _parse_iso(ts_iso)
+    start = (center - timedelta(seconds=within_seconds)).isoformat(timespec="seconds")
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = "SELECT 1 FROM alerts WHERE type = ? AND ts >= ?"
+    params: List[Any] = [alert_type, start]
+    if room:
+        sql += " AND room = ?"
+        params.append(room)
+    sql += " ORDER BY ts DESC LIMIT 1"
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
 def list_history_alerts(limit: int = 500, type_filter: str = "", room_filter: str = "", q: str = "", sort: str = "newest"):
     conn = get_conn()
     cur = conn.cursor()
@@ -273,7 +342,7 @@ def count_active_alerts() -> int:
     return c
 
 # -------------------- Events --------------------
-def list_recent_events(limit: int = 200, type_filter: str = "", source_filter: str = "", q: str = ""):
+def list_recent_events(limit: int = 200, type_filter: str = "", source_filter: str = "", q: str = "", room_filter: str = ""):
     conn = get_conn()
     cur = conn.cursor()
 
@@ -288,10 +357,14 @@ def list_recent_events(limit: int = 200, type_filter: str = "", source_filter: s
         sql += " AND source = ?"
         params.append(source_filter)
 
+    if room_filter:
+        sql += " AND room = ?"
+        params.append(room_filter)
+
     if q:
-        sql += " AND (IFNULL(details,'') LIKE ? OR type LIKE ? OR source LIKE ?)"
+        sql += " AND (IFNULL(details,'') LIKE ? OR type LIKE ? OR source LIKE ? OR IFNULL(room,'') LIKE ?)"
         like = f"%{q}%"
-        params.extend([like, like, like])
+        params.extend([like, like, like, like])
 
     sql += " ORDER BY ts DESC LIMIT ?"
     params.append(int(limit))
@@ -418,6 +491,23 @@ def list_snapshots(limit: int = 120, type_filter: str = "", label_filter: str = 
     rows = cur.fetchall()
     conn.close()
     return rows
+
+def get_latest_snapshot(snapshot_type: str = "", label: str = ""):
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = "SELECT * FROM snapshots WHERE 1=1"
+    params: List[Any] = []
+    if snapshot_type:
+        sql += " AND type = ?"
+        params.append(snapshot_type)
+    if label:
+        sql += " AND label = ?"
+        params.append(label)
+    sql += " ORDER BY ts DESC LIMIT 1"
+    cur.execute(sql, params)
+    row = cur.fetchone()
+    conn.close()
+    return row
 
 def get_snapshot(snapshot_id: int):
     conn = get_conn()

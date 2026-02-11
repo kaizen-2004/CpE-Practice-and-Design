@@ -2,16 +2,16 @@
 {% block content %}
   <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
     <div>
-      <h3 class="mb-1">Snapshot #{{ snap["id"] }}</h3>
+      <h3 class="mb-1">Photo #{{ snap["id"] }}</h3>
       <div class="text-secondary">
         Type: <span class="badge text-bg-dark-subtle border">{{ snap["type"] }}</span>
-        {% if snap["label"] %} • Label: <span class="badge text-bg-secondary">{{ snap["label"] }}</span>{% endif %}
+        {% if snap["label"] %} • Tag: <span class="badge text-bg-secondary">{{ snap["label"] }}</span>{% endif %}
       </div>
     </div>
     <div class="d-flex gap-2">
       <a class="btn btn-outline-secondary" href="{{ url_for('snapshots') }}"><i class="bi bi-arrow-left me-1"></i>Back</a>
       {% if snap["linked_alert_id"] %}
-        <a class="btn btn-outline-primary" href="{{ url_for('alert_details', alert_id=snap['linked_alert_id']) }}"><i class="bi bi-bell me-1"></i>Linked Alert</a>
+        <a class="btn btn-outline-primary" href="{{ url_for('alert_details', alert_id=snap['linked_alert_id']) }}"><i class="bi bi-bell me-1"></i>Related Alert</a>
       {% endif %}
     </div>
   </div>
@@ -24,15 +24,15 @@
         <div class="card-body">
           <div class="row g-3">
             <div class="col-12 col-md-6">
-              <div class="small text-secondary">Timestamp</div>
+              <div class="small text-secondary">Time</div>
               <div class="font-monospace">{{ snap["ts"] }}</div>
             </div>
             <div class="col-12 col-md-6">
-              <div class="small text-secondary">File</div>
+              <div class="small text-secondary">File name</div>
               <div class="font-monospace">{{ snap["file_relpath"] }}</div>
             </div>
             <div class="col-12">
-              <div class="small text-secondary">Note</div>
+              <div class="small text-secondary">Notes</div>
               <div>{{ snap["note"] or "-" }}</div>
             </div>
           </div>
@@ -43,10 +43,10 @@
     <div class="col-12 col-lg-5">
       <div class="card shadow-sm mb-3">
         <div class="card-body">
-          <div class="fw-semibold mb-2">Tag this snapshot</div>
+          <div class="fw-semibold mb-2">Label this photo</div>
           <form method="post" action="{{ url_for('snapshot_set_label', snapshot_id=snap['id']) }}">
             <div class="mb-2">
-              <label class="form-label small text-secondary">Label</label>
+              <label class="form-label small text-secondary">Tag</label>
               <select name="label" class="form-select" required>
                 <option value="">Choose…</option>
                 <option value="AUTHORIZED">AUTHORIZED</option>
@@ -57,17 +57,17 @@
             </div>
             <div class="mb-3">
               <label class="form-label small text-secondary">Optional note</label>
-              <input name="note" class="form-control" placeholder="e.g., visitor (cousin), daylight glare…">
+              <input name="note" class="form-control" placeholder="e.g., visitor, glare, pet">
             </div>
-            <button class="btn btn-primary w-100" type="submit"><i class="bi bi-tag me-1"></i>Save Tag</button>
+            <button class="btn btn-primary w-100" type="submit"><i class="bi bi-tag me-1"></i>Save Label</button>
           </form>
-          <div class="text-secondary small mt-2">These tags are useful for dataset curation and Chapter 4 evidence.</div>
+          <div class="text-secondary small mt-2">Labels help you organize photos and train later.</div>
         </div>
       </div>
 
       <div class="card shadow-sm">
         <div class="card-body">
-          <div class="fw-semibold mb-2">Add to Faces (Authorized dataset)</div>
+          <div class="fw-semibold mb-2">Add to People List</div>
           <form method="post" action="{{ url_for('create_face_from_snapshot', snapshot_id=snap['id']) }}">
             <div class="mb-2">
               <label class="form-label small text-secondary">Person name</label>
@@ -75,17 +75,17 @@
             </div>
             <div class="mb-3">
               <label class="form-label small text-secondary">Optional note</label>
-              <input name="note" class="form-control" placeholder="e.g., owner / roommate">
+              <input name="note" class="form-control" placeholder="e.g., owner, roommate">
             </div>
-            <button class="btn btn-outline-primary w-100" type="submit"><i class="bi bi-person-plus me-1"></i>Create Face + Link</button>
+            <button class="btn btn-outline-primary w-100" type="submit"><i class="bi bi-person-plus me-1"></i>Create Person + Link</button>
           </form>
 
           {% if faces|length > 0 %}
           <hr class="my-3">
-          <div class="fw-semibold mb-2">Or link to an existing face</div>
+          <div class="fw-semibold mb-2">Or link to an existing person</div>
           <form method="post" action="{{ url_for('add_sample_to_face', face_id=faces[0]['id']) }}" id="linkFaceForm">
             <div class="mb-2">
-              <label class="form-label small text-secondary">Choose face</label>
+              <label class="form-label small text-secondary">Choose person</label>
               <select id="faceSelect" class="form-select">
                 {% for f in faces %}
                   <option value="{{ f['id'] }}">{{ f['name'] }} ({{ f['sample_count'] }} samples)</option>
@@ -93,7 +93,7 @@
               </select>
             </div>
             <input type="hidden" name="snapshot_id" value="{{ snap['id'] }}">
-            <button class="btn btn-outline-secondary w-100" type="submit"><i class="bi bi-link-45deg me-1"></i>Link as Sample</button>
+            <button class="btn btn-outline-secondary w-100" type="submit"><i class="bi bi-link-45deg me-1"></i>Link This Photo</button>
           </form>
           <script>
             // submit to /faces/<selected>/add_sample
@@ -105,7 +105,7 @@
           </script>
           {% endif %}
 
-          <div class="text-secondary small mt-2">Face training comes later (LBPH). UI is ready now.</div>
+          <div class="text-secondary small mt-2">Training happens later. This just organizes your photos.</div>
         </div>
       </div>
     </div>

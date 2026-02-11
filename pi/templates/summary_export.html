@@ -14,10 +14,10 @@
   </style>
 </head>
 <body>
-  <h2>Daily Summary — {{ date_str }} (UTC)</h2>
-  <div class="muted">Window: {{ data["start"] }} → {{ data["end"] }}</div>
+  <h2>Daily Overview — {{ date_str }} (UTC)</h2>
+  <div class="muted">Time range: {{ data["start"] }} → {{ data["end"] }}</div>
 
-  <h3>Alerts by type/status</h3>
+  <h3>Alerts by type</h3>
   <table>
     <thead><tr><th>Type</th><th>Status</th><th>Count</th></tr></thead>
     <tbody>
@@ -27,7 +27,7 @@
     </tbody>
   </table>
 
-  <h3>Events by type</h3>
+  <h3>Activity by type</h3>
   <table>
     <thead><tr><th>Type</th><th>Count</th></tr></thead>
     <tbody>
@@ -37,7 +37,7 @@
     </tbody>
   </table>
 
-  <h3>Snapshots by type/label</h3>
+  <h3>Photos by type/tag</h3>
   <table>
     <thead><tr><th>Type</th><th>Label</th><th>Count</th></tr></thead>
     <tbody>
@@ -47,7 +47,7 @@
     </tbody>
   </table>
 
-  <h3>Top rooms (alerts)</h3>
+  <h3>Areas with most alerts</h3>
   <table>
     <thead><tr><th>Room</th><th>Count</th></tr></thead>
     <tbody>

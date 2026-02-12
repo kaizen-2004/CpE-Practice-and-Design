@@ -3,9 +3,13 @@
 #include "esp_http_server.h"
 
 // ===== USER SETTINGS =====
-const char* WIFI_SSID = "YOUR_WIFI_NAME";
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "Guest";
+const char* WIFI_PASS = "Beliy@f@m_2025";
 const char* DEVICE_NAME = "cam-outdoor";
+
+// Stream performance profile
+const framesize_t STREAM_FRAMESIZE = FRAMESIZE_QVGA; // 320x240, low latency
+const int STREAM_JPEG_QUALITY = 12;                  // higher number = lighter frame
 
 // Optional: set static IP if you want stable URLs
 const bool USE_STATIC_IP = false;
@@ -126,14 +130,19 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = STREAM_FRAMESIZE;
+  config.jpeg_quality = STREAM_JPEG_QUALITY;
+  config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
+  config.fb_count = 1;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 10;
     config.fb_count = 2;
+    config.grab_mode = CAMERA_GRAB_LATEST;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
   } else {
-    config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_QQVGA;
+    config.fb_location = CAMERA_FB_IN_DRAM;
     config.fb_count = 1;
   }
 
@@ -143,8 +152,15 @@ void setup() {
     return;
   }
 
+  sensor_t *s = esp_camera_sensor_get();
+  if (s) {
+    s->set_framesize(s, STREAM_FRAMESIZE);
+    s->set_quality(s, STREAM_JPEG_QUALITY);
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(DEVICE_NAME);
+  WiFi.setSleep(false);
 
   if (USE_STATIC_IP) {
     WiFi.config(local_IP, gateway, subnet, dns1, dns2);

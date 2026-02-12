@@ -122,7 +122,7 @@
         <div class="col-12 col-lg-6">
           <div class="small text-secondary text-uppercase mb-2">Outdoor View</div>
           {% if outdoor_url %}
-            <img class="camera-feed" src="{{ outdoor_url }}" alt="Outdoor camera feed">
+            <img id="outdoorFeed" class="camera-feed" src="{{ outdoor_url }}?t=0" data-base-src="{{ outdoor_url }}" alt="Outdoor camera feed">
           {% else %}
             <div class="camera-placeholder">Outdoor camera not connected yet.</div>
           {% endif %}
@@ -130,12 +130,13 @@
         <div class="col-12 col-lg-6">
           <div class="small text-secondary text-uppercase mb-2">Indoor View</div>
           {% if indoor_url %}
-            <img class="camera-feed" src="{{ indoor_url }}" alt="Indoor camera feed">
+            <img id="indoorFeed" class="camera-feed" src="{{ indoor_url }}?t=0" data-base-src="{{ indoor_url }}" alt="Indoor camera feed">
           {% else %}
             <div class="camera-placeholder">Indoor camera not connected yet.</div>
           {% endif %}
         </div>
       </div>
+      <div class="text-secondary small mt-2">Mobile-safe preview mode is enabled.</div>
     </div>
   </div>
 
@@ -228,4 +229,25 @@
       {% endif %}
     </div>
   </div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+  (function () {
+    const refreshMs = {{ camera_refresh_ms|int }};
+    const feeds = [
+      document.getElementById("outdoorFeed"),
+      document.getElementById("indoorFeed")
+    ].filter(Boolean);
+
+    feeds.forEach((img) => {
+      const base = img.dataset.baseSrc;
+      if (!base) return;
+      setInterval(() => {
+        if (document.hidden) return;
+        img.src = `${base}?t=${Date.now()}`;
+      }, refreshMs);
+    });
+  })();
+</script>
 {% endblock %}

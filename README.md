@@ -26,6 +26,29 @@ Open: `http://127.0.0.1:5000`
 
 Main page: `/dashboard`
 
+### Recommended: Run With `.env` (so settings survive IDE restart)
+
+Create `.env` once (already ignored by git):
+
+```bash
+cat > .env <<'EOF'
+OUTDOOR_CAM_SOURCE=/dev/v4l/by-id/usb-SunplusIT_Inc_Integrated_Camera-video-index0
+INDOOR_CAM_SOURCE=/dev/v4l/by-id/usb-SunplusIT_Inc_Integrated_Camera-video-index0
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+TELEGRAM_CHAT_ID=-1003849318611
+PUBLIC_BASE_URL=https://YOUR-TAILSCALE-HOST
+LOCAL_STREAM_FPS=15
+LOCAL_CAM_JPEG_QUALITY=65
+EOF
+```
+
+Load env + run app:
+
+```bash
+set -a; source .env; set +a
+python pi/app.py
+```
+
 ## 3) Vision Runtime (Cameras)
 
 Laptop webcam:
@@ -99,12 +122,32 @@ This writes: `models/fire_color.json`
 
 - `CAMERA_MODE=webcam|esp32|auto`
 - `OUTDOOR_URL` / `INDOOR_URL`
+- `OUTDOOR_CAM_SOURCE` / `INDOOR_CAM_SOURCE` (local USB source, e.g. `0`, `1`, `/dev/v4l/by-id/...`)
+- `LOCAL_CAM_JPEG_QUALITY` (default `80`, lower = smaller/faster preview frame)
+- `CAMERA_REFRESH_MS` (dashboard preview refresh interval, default `900`)
+- `LOCAL_CAM_RETRY_SECONDS` (default `2.0`, retry delay when local camera is missing)
+- `LOCAL_STREAM_FPS` (default `12`, live stream FPS cap for local USB preview)
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (for alert notifications)
+- `PUBLIC_BASE_URL` (public/Tailscale URL used in notification links, e.g. `https://<tailnet-host>`)
+- `ALERT_REMINDER_SCHEDULE` (default `0,60,180,300`, seconds from alert start)
+- `ALERT_REMINDER_REPEAT_SECONDS` (default `600`, repeat reminder interval while still ACTIVE)
+- `ALERT_NOTIFIER_POLL_SECONDS` (default `5`, notifier loop interval)
+- `ALERT_NOTIFY_FAIL_RETRY_SECONDS` (default `60`, retry delay after failed send)
+- `TELEGRAM_SEND_TIMEOUT` (default `8`)
 - `FACE_MIN_SAMPLES` (default `16`)
 - `FACE_TARGET_SAMPLES` (default `24`)
 - `UNKNOWN_THRESHOLD`, `UNKNOWN_STREAK`, `ALERT_COOLDOWN`
 - `FLAME_STREAK`, `FIRE_COOLDOWN`, `FIRE_RATIO_THRESHOLD`
 - `FIRE_FUSION_WINDOW`, `INTRUDER_FUSION_WINDOW`
 - `NODE_OFFLINE_SECONDS`
+
+If `OUTDOOR_CAM_SOURCE` / `INDOOR_CAM_SOURCE` is set, dashboard camera preview uses local USB capture through Flask endpoints:
+- `/camera/local/frame/outdoor`
+- `/camera/local/frame/indoor`
+- `/camera/local/stream/outdoor`
+- `/camera/local/stream/indoor`
+
+Tip: set a slot to `none` (or unset it) to disable that camera block without retries.
 
 ## 8) Notes
 
@@ -113,3 +156,52 @@ This writes: `models/fire_color.json`
   - Outdoor unknown face
   - Indoor unknown face
   - Door-force event
+
+## 9) Persistent Telegram Alerts
+
+1. Create a Telegram bot with `@BotFather` and copy bot token.
+2. Start chat with your bot once.
+3. Add bot to your family group and send at least one message.
+4. Get your group chat ID using:
+
+```bash
+curl -s "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getUpdates"
+```
+
+Use `message.chat.id` where `chat.type` is `group` or `supergroup` (usually starts with `-100`).
+5. Set env vars before running app:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:ABC..."
+export TELEGRAM_CHAT_ID="-100xxxxxxxxxx"
+export PUBLIC_BASE_URL="https://your-tailnet-host"
+```
+
+When an alert is `ACTIVE`, the app sends:
+- initial message
+- reminder messages based on `ALERT_REMINDER_SCHEDULE`
+- repeat reminders every `ALERT_REMINDER_REPEAT_SECONDS` until ACK/RESOLVED
+
+## 10) Phone Icon Access (No Manual URL Typing)
+
+The dashboard is installable as a web app icon:
+- Open dashboard on phone browser.
+- Tap **Install App** (Android/Chrome), or use **Share → Add to Home Screen** on iPhone Safari.
+- After install, open the system directly from the icon.
+
+## 11) Common Issues
+
+- Camera works before, then fails after IDE restart:
+  - cause: camera env vars were not loaded in the new terminal.
+  - fix: run `set -a; source .env; set +a` before `python pi/app.py`.
+
+- Telegram shows inactive after restart:
+  - cause: Telegram env vars are missing in current shell.
+  - fix: load `.env` again and restart app.
+
+- Camera cannot be opened:
+  - ensure no other app is using the camera.
+  - verify source path with `v4l2-ctl --list-devices`.
+
+- Security note:
+  - if bot token is exposed, regenerate it in `@BotFather` immediately.

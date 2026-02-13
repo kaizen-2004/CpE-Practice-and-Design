@@ -5,9 +5,14 @@ import json
 import base64
 import re
 from datetime import datetime, timezone, timedelta
+import time
+import atexit
 import os
 import sys
 import subprocess
+import threading
+from typing import Optional
+from urllib import request as urllib_request
 
 import cv2
 import numpy as np
@@ -63,6 +68,7 @@ from config import (
     EVENT_UNKNOWN,
 )
 from fusion import handle_fire_signal, handle_intruder_evidence
+from notifications import TelegramAlertNotifier, telegram_is_configured, send_telegram_test_message
 
 app = Flask(__name__)
 app.secret_key = "dev-only-change-me"  # change later for real deployments
@@ -79,6 +85,10 @@ FACE_MIN_SAMPLES = int(os.environ.get("FACE_MIN_SAMPLES", "16"))
 
 
 init_db()
+
+_TELEGRAM_NOTIFIER = TelegramAlertNotifier(app.logger)
+_TELEGRAM_NOTIFIER.start()
+atexit.register(_TELEGRAM_NOTIFIER.stop)
 
 def _parse_iso(ts: str):
     try:
@@ -233,11 +243,318 @@ def inject_globals():
     return {
         "guest_mode": get_guest_mode(),
         "active_alert_count": count_active_alerts(),
+        "telegram_enabled": telegram_is_configured(),
     }
 
 @app.get("/")
 def home():
     return redirect(url_for("dashboard"))
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    resp = send_from_directory(app.static_folder, "service-worker.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest():
+    resp = send_from_directory(app.static_folder, "manifest.webmanifest")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+# ---- Camera Proxy ----
+def _camera_url_for(which: str) -> str:
+    if which == "outdoor":
+        return os.environ.get("OUTDOOR_URL", "").strip()
+    if which == "indoor":
+        return os.environ.get("INDOOR_URL", "").strip()
+    return ""
+
+def _fetch_single_jpeg(src_url: str, timeout_seconds: float = 6.0) -> Optional[bytes]:
+    req = urllib_request.Request(src_url, headers={"User-Agent": "CondoCameraProxy/1.0"})
+    started = time.time()
+    buf = b""
+    with urllib_request.urlopen(req, timeout=timeout_seconds) as upstream:
+        while (time.time() - started) < timeout_seconds:
+            chunk = upstream.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            soi = buf.find(b"\xff\xd8")
+            if soi != -1:
+                eoi = buf.find(b"\xff\xd9", soi + 2)
+                if eoi != -1:
+                    return buf[soi:eoi + 2]
+            if len(buf) > 2_000_000:
+                buf = buf[-256_000:]
+    return None
+
+
+def _local_camera_source_for(which: str) -> str:
+    source = ""
+    if which == "outdoor":
+        source = os.environ.get("OUTDOOR_CAM_SOURCE", "").strip()
+    elif which == "indoor":
+        source = os.environ.get("INDOOR_CAM_SOURCE", "").strip()
+    if source.lower() in ("", "none", "off", "-"):
+        return ""
+    return source
+
+
+def _local_camera_jpeg_quality() -> int:
+    try:
+        value = int(os.environ.get("LOCAL_CAM_JPEG_QUALITY", "80"))
+    except Exception:
+        value = 80
+    return max(40, min(95, value))
+
+
+def _local_camera_retry_seconds() -> float:
+    try:
+        value = float(os.environ.get("LOCAL_CAM_RETRY_SECONDS", "2.0"))
+    except Exception:
+        value = 2.0
+    return max(0.5, min(10.0, value))
+
+
+def _local_stream_fps() -> float:
+    try:
+        value = float(os.environ.get("LOCAL_STREAM_FPS", "12"))
+    except Exception:
+        value = 12.0
+    return max(2.0, min(30.0, value))
+
+
+class _LocalCameraWorker:
+    def __init__(self, which: str, source_raw: str):
+        self.which = which
+        self.source_raw = source_raw
+        self.source = _coerce_capture_source(source_raw)
+        self._lock = threading.Lock()
+        self._latest_jpeg: Optional[bytes] = None
+        self._last_frame_ts = 0.0
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"cam-{self.which}")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.5)
+
+    def latest_frame(self) -> Optional[bytes]:
+        with self._lock:
+            return self._latest_jpeg
+
+    def latest_frame_with_ts(self):
+        with self._lock:
+            return self._latest_jpeg, self._last_frame_ts
+
+    def _open_capture(self):
+        is_local_device = isinstance(self.source, int)
+        if isinstance(self.source, str) and self.source.startswith("/dev/video"):
+            is_local_device = True
+        if is_local_device:
+            cap = cv2.VideoCapture(self.source, cv2.CAP_V4L2)
+            if cap.isOpened():
+                return cap
+            cap.release()
+        return cv2.VideoCapture(self.source)
+
+    def _run(self) -> None:
+        cap = None
+        jpeg_quality = _local_camera_jpeg_quality()
+        retry_seconds = _local_camera_retry_seconds()
+        encode_opts = [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
+        fail_count = 0
+        while not self._stop_event.is_set():
+            try:
+                if cap is None or not cap.isOpened():
+                    cap = self._open_capture()
+                    if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    if not cap.isOpened():
+                        fail_count += 1
+                        if fail_count == 1 or fail_count % 15 == 0:
+                            app.logger.warning(
+                                "Local camera '%s' unavailable at source '%s' (fail=%s).",
+                                self.which,
+                                self.source_raw,
+                                fail_count,
+                            )
+                        time.sleep(retry_seconds)
+                        continue
+                    fail_count = 0
+                    # Read a few frames first so auto-exposure settles.
+                    for _ in range(4):
+                        cap.read()
+
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    fail_count += 1
+                    if cap is not None:
+                        cap.release()
+                        cap = None
+                    time.sleep(retry_seconds)
+                    continue
+
+                ok_jpeg, encoded = cv2.imencode(".jpg", frame, encode_opts)
+                if not ok_jpeg:
+                    continue
+
+                with self._lock:
+                    self._latest_jpeg = encoded.tobytes()
+                    self._last_frame_ts = time.time()
+            except Exception:
+                fail_count += 1
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                if fail_count == 1 or fail_count % 15 == 0:
+                    app.logger.exception("Local camera '%s' crashed; retrying.", self.which)
+                time.sleep(retry_seconds)
+
+        if cap is not None:
+            cap.release()
+
+
+_LOCAL_CAMERA_WORKERS: dict[str, _LocalCameraWorker] = {}
+_LOCAL_CAMERA_BINDINGS: dict[str, str] = {}
+_LOCAL_CAMERA_WORKERS_LOCK = threading.Lock()
+
+
+def _get_local_camera_worker(which: str) -> Optional[_LocalCameraWorker]:
+    source_raw = _local_camera_source_for(which)
+    if not source_raw:
+        return None
+    with _LOCAL_CAMERA_WORKERS_LOCK:
+        prev_source = _LOCAL_CAMERA_BINDINGS.get(which)
+        if prev_source and prev_source != source_raw:
+            _LOCAL_CAMERA_BINDINGS.pop(which, None)
+            old_worker = _LOCAL_CAMERA_WORKERS.get(prev_source)
+            if old_worker and prev_source not in _LOCAL_CAMERA_BINDINGS.values():
+                old_worker.stop()
+                _LOCAL_CAMERA_WORKERS.pop(prev_source, None)
+
+        worker = _LOCAL_CAMERA_WORKERS.get(source_raw)
+        if worker is None:
+            worker = _LocalCameraWorker(which=which, source_raw=source_raw)
+            worker.start()
+            _LOCAL_CAMERA_WORKERS[source_raw] = worker
+        _LOCAL_CAMERA_BINDINGS[which] = source_raw
+        return worker
+
+
+def _stop_local_camera_workers() -> None:
+    with _LOCAL_CAMERA_WORKERS_LOCK:
+        workers = list(_LOCAL_CAMERA_WORKERS.values())
+        _LOCAL_CAMERA_WORKERS.clear()
+        _LOCAL_CAMERA_BINDINGS.clear()
+    for worker in workers:
+        worker.stop()
+
+
+atexit.register(_stop_local_camera_workers)
+
+@app.get("/camera/<string:which>")
+def camera_proxy(which: str):
+    src_url = _camera_url_for(which)
+    if not src_url:
+        abort(404)
+
+    def stream_from_source():
+        # Keep the proxy alive so Tailscale clients do not need LAN access to ESP32 directly.
+        while True:
+            try:
+                req = urllib_request.Request(src_url, headers={"User-Agent": "CondoCameraProxy/1.0"})
+                with urllib_request.urlopen(req, timeout=10) as upstream:
+                    while True:
+                        chunk = upstream.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+            except Exception:
+                time.sleep(0.8)
+
+    resp = Response(stream_from_source(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+@app.get("/camera/frame/<string:which>")
+def camera_frame(which: str):
+    src_url = _camera_url_for(which)
+    if not src_url:
+        abort(404)
+    try:
+        jpeg = _fetch_single_jpeg(src_url)
+    except Exception:
+        jpeg = None
+    if not jpeg:
+        return Response("camera unavailable", status=503, mimetype="text/plain")
+    resp = Response(jpeg, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.get("/camera/local/frame/<string:which>")
+def camera_local_frame(which: str):
+    if which not in ("outdoor", "indoor"):
+        abort(404)
+    worker = _get_local_camera_worker(which)
+    if not worker:
+        abort(404)
+    jpeg = worker.latest_frame()
+    if not jpeg:
+        return Response("camera unavailable", status=503, mimetype="text/plain")
+    resp = Response(jpeg, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.get("/camera/local/stream/<string:which>")
+def camera_local_stream(which: str):
+    if which not in ("outdoor", "indoor"):
+        abort(404)
+    worker = _get_local_camera_worker(which)
+    if not worker:
+        abort(404)
+
+    fps = _local_stream_fps()
+    interval = 1.0 / fps
+
+    def generate():
+        last_sent_ts = 0.0
+        while True:
+            jpeg, ts_value = worker.latest_frame_with_ts()
+            if not jpeg:
+                time.sleep(interval)
+                continue
+            if ts_value <= last_sent_ts:
+                time.sleep(interval * 0.5)
+                continue
+            last_sent_ts = ts_value
+            header = (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+            )
+            yield header + jpeg + b"\r\n"
+            time.sleep(interval)
+
+    resp = Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 # ---- Dashboard / Alerts ----
 @app.get("/dashboard")
@@ -300,8 +617,38 @@ def dashboard():
                 "latest_unknown": _event_summary(latest_unknown),
             }
         )
-    outdoor_url = os.environ.get("OUTDOOR_URL", "").strip()
-    indoor_url = os.environ.get("INDOOR_URL", "").strip()
+    outdoor_local_source = _local_camera_source_for("outdoor")
+    indoor_local_source = _local_camera_source_for("indoor")
+    outdoor_src = _camera_url_for("outdoor")
+    indoor_src = _camera_url_for("indoor")
+
+    if outdoor_local_source:
+        outdoor_url = url_for("camera_local_stream", which="outdoor")
+        outdoor_mode = "USB Camera"
+        outdoor_is_stream = True
+    elif outdoor_src:
+        outdoor_url = url_for("camera_frame", which="outdoor")
+        outdoor_mode = "Network Camera"
+        outdoor_is_stream = False
+    else:
+        outdoor_url = ""
+        outdoor_mode = "Not Connected"
+        outdoor_is_stream = False
+
+    if indoor_local_source:
+        indoor_url = url_for("camera_local_stream", which="indoor")
+        indoor_mode = "USB Camera"
+        indoor_is_stream = True
+    elif indoor_src:
+        indoor_url = url_for("camera_frame", which="indoor")
+        indoor_mode = "Network Camera"
+        indoor_is_stream = False
+    else:
+        indoor_url = ""
+        indoor_mode = "Not Connected"
+        indoor_is_stream = False
+
+    camera_refresh_ms = int(os.environ.get("CAMERA_REFRESH_MS", "900"))
     return render_template(
         "dashboard.html",
         alerts=alerts,
@@ -314,6 +661,11 @@ def dashboard():
         room_cards=room_cards,
         outdoor_url=outdoor_url,
         indoor_url=indoor_url,
+        outdoor_mode=outdoor_mode,
+        indoor_mode=indoor_mode,
+        outdoor_is_stream=outdoor_is_stream,
+        indoor_is_stream=indoor_is_stream,
+        camera_refresh_ms=max(400, camera_refresh_ms),
     )
 
 @app.get("/alert/<int:alert_id>")
@@ -688,6 +1040,15 @@ def toggle_guest_mode():
     current = get_guest_mode()
     set_guest_mode(not current)
     flash(f"Guest Mode is now {'ON' if not current else 'OFF'}.", "success")
+    return redirect(request.referrer or url_for("dashboard"))
+
+@app.post("/settings/telegram/test")
+def telegram_test():
+    ok, error = send_telegram_test_message()
+    if ok:
+        flash("Telegram test message sent.", "success")
+    else:
+        flash("Telegram test failed. Check TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID and internet.\n" + error, "warning")
     return redirect(request.referrer or url_for("dashboard"))
 
 @app.get("/health")

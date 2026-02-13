@@ -119,6 +119,20 @@ def init_db() -> None:
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS alert_notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        alert_id INTEGER NOT NULL,
+        channel TEXT NOT NULL,      -- TELEGRAM
+        kind TEXT NOT NULL,         -- INITIAL | REMINDER | TEST
+        message TEXT,
+        ok INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        attempt_ts TEXT NOT NULL,
+        FOREIGN KEY(alert_id) REFERENCES alerts(id) ON DELETE CASCADE
+    );
+    """)
+
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status_ts ON alerts(status, ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_alerts_type_ts ON alerts(type, ts);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, ts);")
@@ -128,6 +142,8 @@ def init_db() -> None:
     cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_alert ON snapshots(linked_alert_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_faces_name ON faces(name);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_face_samples_face ON face_samples(face_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alert_notif_alert_ts ON alert_notifications(alert_id, attempt_ts);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_alert_notif_channel_ok ON alert_notifications(channel, ok);")
 
     cur.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('guest_mode', '0');")
 
@@ -708,3 +724,78 @@ def attach_snapshot_to_alert(alert_id: int, snapshot_relpath: str) -> bool:
     ok = cur.rowcount > 0
     conn.close()
     return ok
+
+
+# -------------------- Alert Notifications --------------------
+def create_alert_notification_log(
+    alert_id: int,
+    channel: str,
+    kind: str,
+    ok: bool,
+    message: str = "",
+    error: str = "",
+    attempt_ts: Optional[str] = None,
+) -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    ts_iso = _utc_iso(attempt_ts)
+    cur.execute(
+        """INSERT INTO alert_notifications
+           (alert_id, channel, kind, message, ok, error, attempt_ts)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            int(alert_id),
+            channel.strip().upper(),
+            kind.strip().upper(),
+            (message or "")[:4000],
+            1 if ok else 0,
+            (error or "")[:1000],
+            ts_iso,
+        ),
+    )
+    conn.commit()
+    new_id = int(cur.lastrowid)
+    conn.close()
+    return new_id
+
+
+def get_last_notification_attempt(alert_id: int, channel: str = "TELEGRAM"):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT * FROM alert_notifications
+           WHERE alert_id = ? AND channel = ?
+           ORDER BY attempt_ts DESC, id DESC
+           LIMIT 1""",
+        (int(alert_id), channel.strip().upper()),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def get_last_successful_notification(alert_id: int, channel: str = "TELEGRAM"):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT * FROM alert_notifications
+           WHERE alert_id = ? AND channel = ? AND ok = 1
+           ORDER BY attempt_ts DESC, id DESC
+           LIMIT 1""",
+        (int(alert_id), channel.strip().upper()),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+
+def count_successful_notifications(alert_id: int, channel: str = "TELEGRAM") -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) AS c FROM alert_notifications WHERE alert_id = ? AND channel = ? AND ok = 1",
+        (int(alert_id), channel.strip().upper()),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"]) if row else 0

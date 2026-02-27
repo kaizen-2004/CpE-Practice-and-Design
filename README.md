@@ -71,6 +71,15 @@ python pi/vision_runtime.py --camera-mode esp32 \
 Indoor camera is mapped to **Living Room** (flame detection + indoor face events).  
 Outdoor camera is mapped to **Door Entrance Area** (face events).
 
+Real-time face pipeline inside the system:
+- Capture frame
+- Detect face(s)
+- Preprocess face ROI
+- Predict with LBPH
+- Apply unknown threshold
+- Display bounding boxes + labels on camera view
+- Trigger face-related events/alerts
+
 ## 4) Sensor Ingestion (ESP32-C3)
 
 Endpoint: `POST /api/sensors/event`
@@ -104,9 +113,10 @@ Go to `/training`:
 2. Capture samples using either:
    - Browser camera (`Start` + `Capture` / `Auto Capture`)
    - External source (`Capture from External Source`, e.g. `0` or stream URL)
-3. Reach at least minimum samples (`FACE_MIN_SAMPLES`, default `16`)
-4. Prefer target samples (`FACE_TARGET_SAMPLES`, default `24`)
-5. Click **Train Face Model (LBPH)**
+3. For each capture: detect face -> preprocess (200x200 grayscale) -> label by person name -> save sample
+4. Reach at least minimum samples (`FACE_MIN_SAMPLES`, default `16`)
+5. Prefer target samples (`FACE_TARGET_SAMPLES`, default `24`)
+6. Click **Train Face Model (LBPH)** (model + labels are saved in `models/`)
 
 The runtime auto-reloads LBPH model changes.
 
@@ -138,6 +148,8 @@ This writes: `models/fire_color.json`
 - `FACE_TARGET_SAMPLES` (default `24`)
 - `UNKNOWN_THRESHOLD`, `UNKNOWN_STREAK`, `ALERT_COOLDOWN`
 - `FLAME_STREAK`, `FIRE_COOLDOWN`, `FIRE_RATIO_THRESHOLD`
+- `FIRE_MIN_BLOB_RATIO` (default `0.0015`, minimum largest connected flame area ratio)
+- `FIRE_MIN_HOT_RATIO` (default `0.0008`, minimum bright warm-core pixel ratio)
 - `FIRE_FUSION_WINDOW`, `INTRUDER_FUSION_WINDOW`
 - `NODE_OFFLINE_SECONDS`
 

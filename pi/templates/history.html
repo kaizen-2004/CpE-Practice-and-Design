@@ -1,22 +1,25 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-4">
     <div>
-      <h3 class="mb-1">History</h3>
-      <div class="text-secondary">Past alerts that were already handled.</div>
+      <h3 class="page-title">Handled Alerts</h3>
+      <div class="page-subtitle">Resolved or acknowledged alerts kept for review.</div>
     </div>
-    <a class="btn btn-outline-secondary" href="{{ url_for('history') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+      <a class="btn btn-primary" href="{{ url_for('history') }}">Refresh</a>
+    </div>
   </div>
 
   <div class="card shadow-sm">
     <div class="card-body">
-      <form method="get" class="row g-2 align-items-end">
+      <form method="get" class="row g-2 align-items-end mb-3">
         <div class="col-12 col-md-3">
           <label class="form-label small text-secondary mb-1">Alert type</label>
           <select name="type" class="form-select form-select-sm">
             <option value="">All</option>
             {% for t in types %}
-              <option value="{{ t }}" {{ "selected" if t==type_filter else "" }}>{{ t }}</option>
+              <option value="{{ t }}" {{ "selected" if t == type_filter else "" }}>{{ t }}</option>
             {% endfor %}
           </select>
         </div>
@@ -25,72 +28,54 @@
           <select name="room" class="form-select form-select-sm">
             <option value="">All</option>
             {% for r in rooms %}
-              <option value="{{ r }}" {{ "selected" if r==room_filter else "" }}>{{ r }}</option>
+              <option value="{{ r }}" {{ "selected" if r == room_filter else "" }}>{{ r }}</option>
             {% endfor %}
           </select>
         </div>
         <div class="col-12 col-md-2">
-          <label class="form-label small text-secondary mb-1">Sort by</label>
+          <label class="form-label small text-secondary mb-1">Sort</label>
           <select name="sort" class="form-select form-select-sm">
-            <option value="newest" {{ "selected" if sort=="newest" else "" }}>Newest</option>
-            <option value="severity" {{ "selected" if sort=="severity" else "" }}>Severity</option>
+            <option value="newest" {{ "selected" if sort == "newest" else "" }}>Newest</option>
+            <option value="severity" {{ "selected" if sort == "severity" else "" }}>Severity</option>
           </select>
         </div>
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">Find</label>
+          <label class="form-label small text-secondary mb-1">Search</label>
           <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="notes or keywords">
         </div>
         <div class="col-12 col-md-1 d-flex gap-2">
-          <button class="btn btn-sm btn-primary w-100" type="submit"><i class="bi bi-funnel me-1"></i></button>
-          <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('history') }}"><i class="bi bi-x-lg"></i></a>
+          <button class="btn btn-sm btn-primary w-100" type="submit">Go</button>
         </div>
       </form>
 
-      <hr class="my-3">
-
       {% if alerts|length == 0 %}
-        <div class="text-secondary">No past alerts yet.</div>
+        <div class="text-secondary">No handled alerts yet.</div>
       {% else %}
         <div class="table-responsive">
-          <table class="table table-striped table-hover align-middle mb-0">
+          <table class="table table-hover align-middle mb-0">
             <thead>
               <tr>
-                <th style="width: 90px;">ID</th>
+                <th>ID</th>
                 <th>Alert</th>
                 <th>Area</th>
-                <th style="width: 120px;">Level</th>
-                <th style="width: 120px;">Status</th>
-                <th style="width: 220px;">Created</th>
-                <th style="width: 220px;">Handled</th>
-                <th>Notes</th>
-                <th style="width: 120px;"></th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Handled</th>
+                <th>Summary</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {% for a in alerts %}
               <tr>
-                <td class="font-monospace">#{{ a["id"] }}</td>
-                <td><span class="badge text-bg-dark-subtle border">{{ a["type"] }}</span></td>
+                <td class="mono">#{{ a["id"] }}</td>
+                <td>{{ alert_label(a["type"]) }}</td>
                 <td>{{ a["room"] or "-" }}</td>
-                <td>
-                  {% if a["severity"]|int >= 3 %}
-                    <span class="badge text-bg-danger">High</span>
-                  {% elif a["severity"]|int == 2 %}
-                    <span class="badge text-bg-warning">Med</span>
-                  {% else %}
-                    <span class="badge text-bg-success">Low</span>
-                  {% endif %}
-                </td>
-                {% set status_label = "Active" if a["status"] == "ACTIVE" else ("Acknowledged" if a["status"] == "ACK" else "Resolved") %}
-                <td><span class="badge text-bg-secondary">{{ status_label }}</span></td>
-                <td class="font-monospace small">{{ a["ts"] }}</td>
-                <td class="font-monospace small">{{ a["ack_ts"] or "-" }}</td>
-                <td class="text-break">{{ a["details"] or "" }}</td>
-                <td>
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">
-                    <i class="bi bi-eye"></i>
-                  </a>
-                </td>
+                <td>{{ status_label(a["status"]) }}</td>
+                <td class="small">{{ format_ts(a["ts"]) }}</td>
+                <td class="small">{{ format_ts(a["ack_ts"]) if a["ack_ts"] else "-" }}</td>
+                <td title="{{ a['details'] or '' }}">{{ alert_summary(a["type"], a["details"]) }}</td>
+                <td><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">Details</a></td>
               </tr>
               {% endfor %}
             </tbody>

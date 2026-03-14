@@ -1,0 +1,38 @@
+# MQTT ACL for thesis topic namespace: thesis/v1/...
+# Adjust usernames to match your provisioned password entries.
+
+user thesis_ingest
+topic read thesis/v1/events/+
+topic read thesis/v1/status/+
+topic read thesis/v1/camera/+/ack
+
+user vision_runtime
+topic write thesis/v1/events/cam_indoor
+topic write thesis/v1/events/cam_outdoor
+topic write thesis/v1/status/cam_indoor
+topic write thesis/v1/status/cam_outdoor
+topic write thesis/v1/status/vision_runtime
+
+user mq2_living
+topic write thesis/v1/events/mq2_living
+topic write thesis/v1/status/mq2_living
+
+user mq2_door
+topic write thesis/v1/events/mq2_door
+topic write thesis/v1/status/mq2_door
+
+user door_force
+topic write thesis/v1/events/door_force
+topic write thesis/v1/status/door_force
+
+user cam_indoor
+topic write thesis/v1/status/cam_indoor
+topic write thesis/v1/events/cam_indoor
+topic read thesis/v1/camera/cam_indoor/control
+topic write thesis/v1/camera/cam_indoor/ack
+
+user cam_outdoor
+topic write thesis/v1/status/cam_outdoor
+topic write thesis/v1/events/cam_outdoor
+topic read thesis/v1/camera/cam_outdoor/control
+topic write thesis/v1/camera/cam_outdoor/ack

@@ -1,0 +1,4 @@
+# Real-time Detection - Local Studies
+
+Related studies on fire detection conducted by Abaya et al. (2016) and Calo and Barbosa (2024) demonstrate the importance of having a quick send, location-specific, and severity-aware alerts for a system. Their hybrid approach often work without needing to detect intruders, even though they use both sensors and video analytics. To enhance overall situational awareness, our proposed study expands upon this by utilizing a multi-criteria fire verification logic and directly integrating it with facial recognition-based intruder surveillance.
+Moreover, Dela Cruz et al. (2019), Rodelas and Ballera (2021), and Jaira-Salayon-Hernandez et al. (2024) illustrate that in crucial safety scenarios, the application of multiple behavioral traits diminishes false positives. Their results show how important it is to combine visual data with sensor readings. This directly affects how we confirm intrusions and fires.

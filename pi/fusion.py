@@ -108,3 +108,35 @@ def handle_intruder_evidence(ts: str, room: str = "", cooldown_seconds: Optional
         attach_snapshot_to_alert(alert_id, snap["file_relpath"])
 
     return alert_id
+
+
+def handle_door_force_signal(ts: str, room: str = "", cooldown_seconds: Optional[int] = None) -> Optional[int]:
+    intruder_alert_id = handle_intruder_evidence(ts, room=room)
+    if intruder_alert_id is not None:
+        return intruder_alert_id
+
+    cooldown = cooldown_seconds if cooldown_seconds is not None else INTRUDER_COOLDOWN_SECONDS
+
+    latest_force = get_latest_event(EVENT_DOOR_FORCE, room=room) or get_latest_event(EVENT_DOOR_FORCE)
+    alert_room = room
+    if not alert_room and latest_force and latest_force["room"]:
+        alert_room = latest_force["room"]
+    if not alert_room:
+        alert_room = "Door Entrance Area"
+
+    if has_recent_alert("DOOR_FORCE", within_seconds=cooldown, ts=ts, room=alert_room):
+        return None
+
+    details = "Door-force sensor triggered"
+    if latest_force and latest_force["details"]:
+        details = str(latest_force["details"])
+
+    return create_alert(
+        "DOOR_FORCE",
+        room=alert_room,
+        severity=3,
+        status="ACTIVE",
+        details=details,
+        snapshot_path="",
+        ts=ts,
+    )

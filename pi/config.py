@@ -9,6 +9,12 @@ EVENT_DOOR_FORCE = "DOOR_FORCE"
 EVENT_UNKNOWN = "UNKNOWN"
 EVENT_AUTHORIZED = "AUTHORIZED"
 
+MQTT_TOPIC_ROOT = os.environ.get("MQTT_TOPIC_ROOT", "thesis/v1").strip().strip("/")
+MQTT_BROKER_HOST = os.environ.get("MQTT_BROKER_HOST", "127.0.0.1").strip()
+MQTT_BROKER_PORT = int(os.environ.get("MQTT_BROKER_PORT", "1883"))
+MQTT_BROKER_USERNAME = os.environ.get("MQTT_BROKER_USERNAME", "").strip()
+MQTT_BROKER_PASSWORD = os.environ.get("MQTT_BROKER_PASSWORD", "").strip()
+
 NODE_META: Dict[str, Dict[str, str]] = {
     "mq2_living": {
         "label": "MQ-2 Smoke Sensor",
@@ -73,3 +79,11 @@ def normalize_node_id(raw: str) -> str:
 
 def get_node_meta(node_id: str) -> Dict[str, str]:
     return NODE_META.get(node_id, {"label": node_id, "room": "", "kind": "unknown", "role": ""})
+
+
+def mqtt_event_topic(node_id: str) -> str:
+    return f"{MQTT_TOPIC_ROOT}/events/{normalize_node_id(node_id)}"
+
+
+def mqtt_status_topic(node_id: str) -> str:
+    return f"{MQTT_TOPIC_ROOT}/status/{normalize_node_id(node_id)}"

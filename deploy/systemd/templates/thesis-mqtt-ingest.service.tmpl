@@ -1,0 +1,20 @@
+[Unit]
+Description=Thesis MQTT Ingest Bridge
+After=network-online.target thesis-app.service mosquitto.service
+Wants=network-online.target thesis-app.service mosquitto.service
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__PROJECT_ROOT__
+EnvironmentFile=-__PROJECT_ROOT__/.env
+EnvironmentFile=__PROJECT_ROOT__/deploy/systemd/thesis.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/bin/bash -lc 'exec "$PYTHON_BIN" pi/mqtt_ingest.py --broker-host "$MQTT_BROKER_HOST" --broker-port "$MQTT_BROKER_PORT" --broker-username "$MQTT_BROKER_USERNAME" --broker-password "$MQTT_BROKER_PASSWORD" --client-id "$MQTT_INGEST_CLIENT_ID" --topic-root "$MQTT_TOPIC_ROOT" --api-url "$SENSOR_EVENT_URL" --api-key "$SENSOR_API_KEY" --qos "$MQTT_INGEST_QOS" --retry-seconds "$MQTT_INGEST_RETRY_SECONDS" --status-interval "$MQTT_INGEST_STATUS_INTERVAL"'
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,73 +1,113 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="d-flex flex-wrap justify-content-between gap-2 align-items-end mb-3">
+  <div class="d-flex flex-wrap justify-content-between gap-2 align-items-end mb-4">
     <div>
-      <h3 class="page-title">Dashboard</h3>
-      <div class="page-subtitle">Quick view of your home: alerts, sensors, and cameras.</div>
+      <h3 class="page-title">Core Dashboard</h3>
+      <div class="page-subtitle">Minimal operator view for sensors, cameras, active alerts, and recent activity.</div>
     </div>
     <div class="d-flex gap-2">
       <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Refresh</a>
-      <a class="btn btn-outline-primary" href="{{ url_for('events') }}">View Activity</a>
-      {% if telegram_enabled %}
-      <form method="post" action="{{ url_for('telegram_test') }}">
-        <button class="btn btn-outline-success" type="submit">Test Telegram</button>
-      </form>
-      {% endif %}
-      <a class="btn btn-primary" href="{{ url_for('training') }}">Training</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('history') }}">Alerts</a>
+      <a class="btn btn-primary" href="{{ url_for('events') }}">Activity</a>
     </div>
   </div>
 
-  <div class="card shadow-sm mb-3 fade-in">
-    <div class="card-body d-flex flex-wrap justify-content-between align-items-center gap-2">
+  <div class="row g-3 mb-4">
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Active Alerts</div>
+        <div id="kpiActiveAlerts" class="kpi-value">{{ active_alert_count }}</div>
+        <div class="kpi-sub">Needs acknowledgement or resolution.</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Sensors Online</div>
+        <div id="kpiSensorsOnline" class="kpi-value">{{ sensors_online }}/{{ sensors_total }}</div>
+        <div class="kpi-sub">Smoke and door-force nodes.</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Cameras Online</div>
+        <div id="kpiCamerasOnline" class="kpi-value">{{ cameras_online }}/{{ cameras_total }}</div>
+        <div class="kpi-sub">Indoor and outdoor camera sources.</div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="kpi-card">
+        <div class="kpi-label">Monitored Areas</div>
+        <div class="kpi-value">{{ room_cards|length }}</div>
+        <div class="kpi-sub">Living Room and Door Entrance Area.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body d-flex flex-wrap justify-content-between gap-3 align-items-center">
       <div>
-        <div class="fw-semibold">Quick Access on Phone</div>
+        <div class="fw-semibold">Minimal Core Scope</div>
         <div class="text-secondary small">
-          Install once, then open the system from your phone icon (no manual URL typing).
-          If iPhone Safari does not show Install button, use Share → Add to Home Screen.
+          This branch keeps only monitoring, event logging, persistent Telegram alerts, and operator review pages.
+        </div>
+      </div>
+      <div class="text-secondary small">
+        Disabled here: training, face management, summary exports, device health page, and extra admin tools.
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Live Camera Preview</h5>
+        <span class="text-secondary small">Preview only. Core system keeps detection, logging, and alerts.</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary text-uppercase mb-2">
+            Outdoor Camera
+            <span class="badge text-bg-secondary-subtle border ms-1">{{ outdoor_mode }}</span>
+          </div>
+          {% if outdoor_url %}
+            <img
+              id="outdoorFeed"
+              class="camera-feed"
+              src="{{ outdoor_url }}{% if not outdoor_is_stream %}?t=0{% endif %}"
+              {% if not outdoor_is_stream %}data-base-src="{{ outdoor_url }}"{% endif %}
+              alt="Outdoor camera feed">
+          {% else %}
+            <div class="camera-placeholder">Outdoor camera not connected.</div>
+          {% endif %}
+        </div>
+        <div class="col-12 col-lg-6">
+          <div class="small text-secondary text-uppercase mb-2">
+            Indoor Camera
+            <span class="badge text-bg-secondary-subtle border ms-1">{{ indoor_mode }}</span>
+          </div>
+          {% if indoor_url %}
+            <img
+              id="indoorFeed"
+              class="camera-feed"
+              src="{{ indoor_url }}{% if not indoor_is_stream %}?t=0{% endif %}"
+              {% if not indoor_is_stream %}data-base-src="{{ indoor_url }}"{% endif %}
+              alt="Indoor camera feed">
+          {% else %}
+            <div class="camera-placeholder">Indoor camera not connected.</div>
+          {% endif %}
         </div>
       </div>
     </div>
   </div>
 
-  <div class="row g-3 mb-3 fade-in">
-    <div class="col-12 col-md-3">
-      <div class="kpi-card">
-        <div class="kpi-label">Current Alerts</div>
-        <div class="kpi-value">{{ active_alert_count }}</div>
-        <div class="kpi-sub">Mark each alert as fixed when done.</div>
-      </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="kpi-card">
-        <div class="kpi-label">Sensors Working</div>
-        <div class="kpi-value">{{ sensors_online }}/{{ sensors_total }}</div>
-        <div class="kpi-sub">Smoke + door sensors.</div>
-      </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="kpi-card">
-        <div class="kpi-label">Cameras Working</div>
-        <div class="kpi-value">{{ cameras_online }}/{{ cameras_total }}</div>
-        <div class="kpi-sub">Indoor and outdoor cameras.</div>
-      </div>
-    </div>
-    <div class="col-12 col-md-3">
-      <div class="kpi-card">
-        <div class="kpi-label">Guest Mode</div>
-        <div class="kpi-value">{{ "ON" if guest_mode else "OFF" }}</div>
-        <div class="kpi-sub">Pauses intruder alerts while guests are around.</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row g-3 mb-3 fade-in">
+  <div class="row g-3 mb-4">
     {% for card in room_cards %}
       <div class="col-12 col-lg-6">
-        <div class="card hover-lift h-100">
+        <div class="card h-100">
           <div class="card-body">
             <div class="room-card-header">
               <div class="room-title">{{ card.room }}</div>
-              <span class="evidence-pill">Room status</span>
+              <span class="evidence-pill">Room Status</span>
             </div>
             <div class="row g-3">
               <div class="col-12 col-md-6">
@@ -81,46 +121,29 @@
                         <span class="status-dot {{ 'status-online' if s.online else 'status-offline' }}"></span>
                         {{ s.label }}
                       </div>
-                      <div class="mono small">{{ s.last_seen_ts or "-" }}</div>
+                      <div class="small">{{ format_ts(s.last_seen_ts, short=True) if s.last_seen_ts else "-" }}</div>
                     </div>
                   {% endfor %}
                 {% endif %}
               </div>
               <div class="col-12 col-md-6">
-                <div class="small text-secondary text-uppercase">Cameras</div>
-                {% if card.cameras|length == 0 %}
-                  <div class="text-secondary small">No cameras assigned.</div>
-                {% else %}
-                  {% for c in card.cameras %}
-                    <div class="status-row">
-                      <div>
-                        <span class="status-dot {{ 'status-online' if c.online else 'status-offline' }}"></span>
-                        {{ c.label }}
-                      </div>
-                      <div class="mono small">{{ c.last_seen_ts or "-" }}</div>
-                    </div>
-                  {% endfor %}
-                {% endif %}
-              </div>
-            </div>
-
-            <div class="mt-3">
-              <div class="small text-secondary text-uppercase mb-2">Latest Signals</div>
-              <div class="status-row">
-                <div>Smoke Alert</div>
-                <div class="mono small">{{ card.latest_smoke.ts if card.latest_smoke else "-" }}</div>
-              </div>
-              <div class="status-row">
-                <div>Flame Alert</div>
-                <div class="mono small">{{ card.latest_flame.ts if card.latest_flame else "-" }}</div>
-              </div>
-              <div class="status-row">
-                <div>Door Force</div>
-                <div class="mono small">{{ card.latest_door_force.ts if card.latest_door_force else "-" }}</div>
-              </div>
-              <div class="status-row">
-                <div>Unknown Person</div>
-                <div class="mono small">{{ card.latest_unknown.ts if card.latest_unknown else "-" }}</div>
+                <div class="small text-secondary text-uppercase">Latest Signals</div>
+                <div class="status-row">
+                  <div>Smoke</div>
+                  <div class="small">{{ format_ts(card.latest_smoke.ts, short=True) if card.latest_smoke else "-" }}</div>
+                </div>
+                <div class="status-row">
+                  <div>Flame</div>
+                  <div class="small">{{ format_ts(card.latest_flame.ts, short=True) if card.latest_flame else "-" }}</div>
+                </div>
+                <div class="status-row">
+                  <div>Door Force</div>
+                  <div class="small">{{ format_ts(card.latest_door_force.ts, short=True) if card.latest_door_force else "-" }}</div>
+                </div>
+                <div class="status-row">
+                  <div>Unknown Face</div>
+                  <div class="small">{{ format_ts(card.latest_unknown.ts, short=True) if card.latest_unknown else "-" }}</div>
+                </div>
               </div>
             </div>
           </div>
@@ -129,139 +152,98 @@
     {% endfor %}
   </div>
 
-  <div class="card shadow-sm mb-3 fade-in">
+  <div class="card shadow-sm mb-4">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0">Live Camera View</h5>
-        <span class="text-secondary small">Feeds will appear once cameras are connected.</span>
+        <h5 class="mb-0">Active Alerts</h5>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('history') }}">Handled Alerts</a>
       </div>
-      <div class="row g-3">
-        <div class="col-12 col-lg-6">
-          <div class="small text-secondary text-uppercase mb-2">
-            Outdoor View
-            <span class="badge text-bg-secondary-subtle border ms-1">{{ outdoor_mode }}</span>
+      <div id="activeAlertsSection">
+        {% if alerts|length == 0 %}
+          <div class="text-secondary">No active alerts.</div>
+        {% else %}
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Alert</th>
+                  <th>Area</th>
+                  <th>Level</th>
+                  <th>Time</th>
+                  <th>Summary</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for a in alerts %}
+                <tr>
+                  <td class="mono">#{{ a["id"] }}</td>
+                  <td><span class="badge text-bg-secondary">{{ alert_label(a["type"]) }}</span></td>
+                  <td>{{ a["room"] or "-" }}</td>
+                  <td>
+                    {% if a["severity"]|int >= 3 %}
+                      <span class="alert-badge alert-high">High</span>
+                    {% elif a["severity"]|int == 2 %}
+                      <span class="alert-badge alert-med">Med</span>
+                    {% else %}
+                      <span class="alert-badge alert-low">Low</span>
+                    {% endif %}
+                  </td>
+                  <td class="small">{{ format_ts(a["ts"]) }}</td>
+                  <td class="text-break" title="{{ a['details'] or '' }}">{{ alert_summary(a["type"], a["details"]) }}</td>
+                  <td>
+                    <div class="d-flex gap-2 flex-wrap">
+                      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">Details</a>
+                      <form method="post" action="{{ url_for('ack', alert_id=a['id']) }}" class="d-flex gap-2">
+                        <select name="status" class="form-select form-select-sm">
+                          <option value="ACK">Acknowledge</option>
+                          <option value="RESOLVED">Resolve</option>
+                        </select>
+                        <button class="btn btn-sm btn-outline-primary" type="submit">Apply</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
           </div>
-          {% if outdoor_url %}
-            <img
-              id="outdoorFeed"
-              class="camera-feed"
-              src="{{ outdoor_url }}{% if not outdoor_is_stream %}?t=0{% endif %}"
-              {% if not outdoor_is_stream %}data-base-src="{{ outdoor_url }}"{% endif %}
-              alt="Outdoor camera feed">
-          {% else %}
-            <div class="camera-placeholder">Outdoor camera not connected yet.</div>
-          {% endif %}
-        </div>
-        <div class="col-12 col-lg-6">
-          <div class="small text-secondary text-uppercase mb-2">
-            Indoor View
-            <span class="badge text-bg-secondary-subtle border ms-1">{{ indoor_mode }}</span>
-          </div>
-          {% if indoor_url %}
-            <img
-              id="indoorFeed"
-              class="camera-feed"
-              src="{{ indoor_url }}{% if not indoor_is_stream %}?t=0{% endif %}"
-              {% if not indoor_is_stream %}data-base-src="{{ indoor_url }}"{% endif %}
-              alt="Indoor camera feed">
-          {% else %}
-            <div class="camera-placeholder">Indoor camera not connected yet.</div>
-          {% endif %}
-        </div>
-      </div>
-      <div class="text-secondary small mt-2">
-        USB cameras use live stream mode. Network cameras use snapshot preview mode for stable mobile/Tailscale access.
+        {% endif %}
       </div>
     </div>
   </div>
 
-  <div class="card shadow-sm mb-3 fade-in">
-    <div class="card-body">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0">Current Alerts</h5>
-        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('history') }}">View Past Alerts</a>
-      </div>
-      {% if alerts|length == 0 %}
-        <div class="text-secondary">No current alerts.</div>
-      {% else %}
-        <div class="table-responsive">
-          <table class="table table-hover align-middle mb-0">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Alert</th>
-                <th>Area</th>
-                <th>Level</th>
-                <th>Time</th>
-                <th>Notes</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for a in alerts %}
-              <tr>
-                <td class="mono">#{{ a["id"] }}</td>
-                <td><span class="badge text-bg-secondary">{{ a["type"] }}</span></td>
-                <td>{{ a["room"] or "-" }}</td>
-                <td>
-                  {% if a["severity"]|int >= 3 %}
-                    <span class="alert-badge alert-high">High</span>
-                  {% elif a["severity"]|int == 2 %}
-                    <span class="alert-badge alert-med">Med</span>
-                  {% else %}
-                    <span class="alert-badge alert-low">Low</span>
-                  {% endif %}
-                </td>
-                <td class="mono small">{{ a["ts"] }}</td>
-                <td class="text-break">{{ a["details"] or "" }}</td>
-                <td>
-                  <div class="d-flex gap-2 flex-wrap">
-                    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('alert_details', alert_id=a['id']) }}">Details</a>
-                    <form method="post" action="{{ url_for('ack', alert_id=a['id']) }}" class="d-flex gap-2">
-                      <select name="status" class="form-select form-select-sm">
-                        <option value="ACK">Acknowledge</option>
-                        <option value="RESOLVED">Resolved</option>
-                      </select>
-                      <button class="btn btn-sm btn-outline-primary" type="submit">Submit</button>
-                    </form>
-                  </div>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="card shadow-sm fade-in">
+  <div class="card shadow-sm">
     <div class="card-body">
       <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0">Recent Activity</h5>
-        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}">View All Activity</a>
+        <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('events') }}">Open Activity</a>
       </div>
-      {% if recent_events|length == 0 %}
-        <div class="text-secondary">No activity yet.</div>
-      {% else %}
-        <div class="table-responsive">
-          <table class="table table-sm align-middle mb-0">
-            <thead>
-              <tr><th>What</th><th>Device</th><th>Area</th><th>Time</th></tr>
-            </thead>
-            <tbody>
-              {% for e in recent_events %}
-                <tr>
-                  <td>{{ e["type"] }}</td>
-                  <td>{{ e["source"] }}</td>
-                  <td>{{ e["room"] or "-" }}</td>
-                  <td class="mono small">{{ e["ts"] }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      {% endif %}
+      <div id="recentActivitySection">
+        {% if recent_events|length == 0 %}
+          <div class="text-secondary">No activity yet.</div>
+        {% else %}
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr><th>Event</th><th>Source</th><th>Area</th><th>Time</th><th>Summary</th></tr>
+              </thead>
+              <tbody>
+                {% for e in recent_events %}
+                  <tr>
+                    <td>{{ event_label(e["type"]) }}</td>
+                    <td>{{ source_label(e["source"]) }}</td>
+                    <td>{{ e["room"] or "-" }}</td>
+                    <td class="small">{{ format_ts(e["ts"]) }}</td>
+                    <td title="{{ e['details'] or '' }}">{{ event_summary(e["type"], e["details"], e["source"]) }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      </div>
     </div>
   </div>
 {% endblock %}

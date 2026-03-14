@@ -1,0 +1,7 @@
+[Unit]
+Description=Thesis Monitoring Stack (Flask + MQTT Ingest)
+Wants=thesis-app.service thesis-mqtt-ingest.service
+After=thesis-app.service thesis-mqtt-ingest.service
+
+[Install]
+WantedBy=multi-user.target

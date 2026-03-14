@@ -1,64 +1,64 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-4">
     <div>
-      <h3 class="mb-1">Activity</h3>
-      <div class="text-secondary">A simple list of what the cameras and sensors are seeing.</div>
+      <h3 class="page-title">Activity Log</h3>
+      <div class="page-subtitle">Core event stream from sensors and cameras.</div>
     </div>
-    <a class="btn btn-outline-secondary" href="{{ url_for('events') }}"><i class="bi bi-arrow-clockwise me-1"></i>Refresh</a>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
+      <a class="btn btn-primary" href="{{ url_for('events') }}">Refresh</a>
+    </div>
   </div>
 
   <div class="card shadow-sm">
     <div class="card-body">
-      <form method="get" class="row g-2 align-items-end">
+      <form method="get" class="row g-2 align-items-end mb-3">
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">What happened</label>
-          <input name="type" value="{{ type_filter }}" class="form-control form-control-sm" placeholder="e.g., UNKNOWN">
+          <label class="form-label small text-secondary mb-1">Event</label>
+          <input name="type" value="{{ type_filter }}" class="form-control form-control-sm" placeholder="e.g. DOOR_FORCE">
         </div>
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">Device</label>
-          <input name="source" value="{{ source_filter }}" class="form-control form-control-sm" placeholder="e.g., CAM_OUTDOOR">
+          <label class="form-label small text-secondary mb-1">Source</label>
+          <input name="source" value="{{ source_filter }}" class="form-control form-control-sm" placeholder="e.g. door_force">
         </div>
         <div class="col-12 col-md-2">
           <label class="form-label small text-secondary mb-1">Area</label>
-          <input name="room" value="{{ room_filter }}" class="form-control form-control-sm" placeholder="e.g., Living Room">
+          <input name="room" value="{{ room_filter }}" class="form-control form-control-sm" placeholder="Living Room">
         </div>
         <div class="col-12 col-md-3">
-          <label class="form-label small text-secondary mb-1">Find</label>
+          <label class="form-label small text-secondary mb-1">Search</label>
           <input name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="notes or keywords">
         </div>
         <div class="col-12 col-md-1 d-flex gap-2">
-          <button class="btn btn-sm btn-primary w-100" type="submit"><i class="bi bi-funnel me-1"></i></button>
-          <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('events') }}"><i class="bi bi-x-lg"></i></a>
+          <button class="btn btn-sm btn-primary w-100" type="submit">Go</button>
         </div>
       </form>
 
-      <hr class="my-3">
-
       {% if events|length == 0 %}
-        <div class="text-secondary">No activity yet.</div>
+        <div class="text-secondary">No activity recorded yet.</div>
       {% else %}
         <div class="table-responsive">
           <table class="table table-hover align-middle mb-0">
             <thead>
               <tr>
-                <th style="width: 90px;">ID</th>
-                <th style="width: 200px;">What</th>
-                <th style="width: 200px;">Device</th>
-                <th style="width: 180px;">Area</th>
-                <th style="width: 220px;">Time</th>
-                <th>Notes</th>
+                <th>ID</th>
+                <th>Event</th>
+                <th>Source</th>
+                <th>Area</th>
+                <th>Time</th>
+                <th>Summary</th>
               </tr>
             </thead>
             <tbody>
               {% for e in events %}
               <tr>
-                <td class="font-monospace">#{{ e["id"] }}</td>
-                <td><span class="badge text-bg-dark-subtle border">{{ e["type"] }}</span></td>
-                <td><span class="badge text-bg-secondary-subtle border">{{ e["source"] }}</span></td>
+                <td class="mono">#{{ e["id"] }}</td>
+                <td>{{ event_label(e["type"]) }}</td>
+                <td>{{ source_label(e["source"]) }}</td>
                 <td>{{ e["room"] or "-" }}</td>
-                <td class="font-monospace small">{{ e["ts"] }}</td>
-                <td class="text-break">{{ e["details"] or "" }}</td>
+                <td class="small">{{ format_ts(e["ts"]) }}</td>
+                <td title="{{ e['details'] or '' }}">{{ event_summary(e["type"], e["details"], e["source"]) }}</td>
               </tr>
               {% endfor %}
             </tbody>

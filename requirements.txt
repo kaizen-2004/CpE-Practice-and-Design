@@ -1,2 +1,4 @@
 Flask>=2.3,<4
 opencv-contrib-python>=4.8
+pyserial>=3.5
+paho-mqtt>=2.1

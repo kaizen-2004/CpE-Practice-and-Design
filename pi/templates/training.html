@@ -205,7 +205,9 @@
   }
 
   function handleCaptureData(data) {
-    const statusText = `${data.name}: ${data.count} photos | min ${data.min_required} | goal ${data.target}`;
+    const faces = Number.isFinite(data.faces_detected) ? data.faces_detected : null;
+    const faceText = faces === null ? "" : ` | detected ${faces} face${faces === 1 ? "" : "s"}`;
+    const statusText = `${data.name}: ${data.count} photos | min ${data.min_required} | goal ${data.target}${faceText}`;
     setStatus(statusText, false);
     if (data.target_reached) {
       stopAutoCapture();

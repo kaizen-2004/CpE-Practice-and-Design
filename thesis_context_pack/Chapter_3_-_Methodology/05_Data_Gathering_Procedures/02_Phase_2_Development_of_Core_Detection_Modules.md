@@ -1,0 +1,3 @@
+# Phase 2: Development of Core Detection Modules
+
+Programming for facial detection and recognition module, visual flame detection module, smoke sensing module, and door-force detection module has been done and calibration has been carried out using the split-host implementation, with vision modules running on a second-hand laptop and server/logging services running on Raspberry Pi 2. Controlled tests are run (using recorded images/videos, test smoke conditions, and controlled door-force events) and the system logs recognition results, detection decisions, and processing times. These logs are the first set of data for module-level performance.

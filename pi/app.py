@@ -13,9 +13,37 @@ import subprocess
 import threading
 from typing import Optional
 from urllib import request as urllib_request
+from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
+
+def _load_local_env() -> None:
+    env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key or key in os.environ:
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                os.environ[key] = value
+    except OSError:
+        return
+
+_load_local_env()
 
 from db import (
     init_db,
@@ -54,8 +82,15 @@ from db import (
     # events
     create_event,
     get_latest_event,
+    create_alert,
+    has_recent_alert,
 )
-from vision_utils import export_face_sample_from_snapshot, extract_face_roi
+from vision_utils import (
+    export_face_sample_from_snapshot,
+    detect_preprocess_faces,
+    analyze_faces,
+    draw_face_detections,
+)
 from config import (
     ROOMS,
     NODE_META,
@@ -67,21 +102,63 @@ from config import (
     EVENT_FLAME_SIGNAL,
     EVENT_UNKNOWN,
 )
-from fusion import handle_fire_signal, handle_intruder_evidence
+from fusion import handle_fire_signal, handle_intruder_evidence, handle_door_force_signal
 from notifications import TelegramAlertNotifier, telegram_is_configured, send_telegram_test_message
 
 app = Flask(__name__)
 app.secret_key = "dev-only-change-me"  # change later for real deployments
 
+MINIMAL_CORE_MODE = True
+CORE_ENDPOINTS = {
+    "home",
+    "dashboard",
+    "dashboard_legacy",
+    "dashboard_live",
+    "ui_nodes_live",
+    "ui_events_live",
+    "ui_stats_daily",
+    "ui_settings_live",
+    "api_faces_list",
+    "api_faces_create",
+    "api_faces_delete",
+    "api_training_face_status",
+    "api_training_face_capture",
+    "api_training_face_train",
+    "alert_details",
+    "ack",
+    "history",
+    "events",
+    "sensors_event",
+    "camera_proxy",
+    "camera_frame",
+    "camera_local_frame",
+    "camera_local_stream",
+    "serve_snapshot",
+    "service_worker",
+    "web_manifest",
+    "static",
+}
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+REACT_DASHBOARD_DIST_DIR = os.path.join(PROJECT_ROOT, "web_dashboard_ui", "dist")
+REACT_DASHBOARD_INDEX = os.path.join(REACT_DASHBOARD_DIST_DIR, "index.html")
+REACT_DASHBOARD_ENABLED = os.environ.get("REACT_DASHBOARD_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 DATASET_DIR = os.path.join(PROJECT_ROOT, "data", "faces")
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 FIRE_DATASET_DIR = os.path.join(PROJECT_ROOT, "data", "fire")
 FIRE_FLAME_DIR = os.path.join(FIRE_DATASET_DIR, "flame")
 FIRE_NON_FLAME_DIR = os.path.join(FIRE_DATASET_DIR, "non_flame")
 FIRE_MODEL_PATH = os.path.join(MODELS_DIR, "fire_color.json")
+LBPH_MODEL_PATH = os.path.join(MODELS_DIR, "lbph.yml")
+LBPH_LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
 FACE_TARGET_SAMPLES = int(os.environ.get("FACE_TARGET_SAMPLES", "24"))
 FACE_MIN_SAMPLES = int(os.environ.get("FACE_MIN_SAMPLES", "16"))
+FACE_UNKNOWN_THRESHOLD = float(os.environ.get("UNKNOWN_THRESHOLD", "65"))
 
 
 init_db()
@@ -89,6 +166,45 @@ init_db()
 _TELEGRAM_NOTIFIER = TelegramAlertNotifier(app.logger)
 _TELEGRAM_NOTIFIER.start()
 atexit.register(_TELEGRAM_NOTIFIER.stop)
+
+_FACE_MODEL_LOCK = threading.RLock()
+_FACE_MODEL_CACHE = {
+    "version": None,
+    "recognizer": None,
+    "id_to_name": {},
+}
+
+EVENT_LABELS = {
+    "DOOR_HEARTBEAT": "Door Sensor Check-In",
+    "DOOR_SENSOR_OFFLINE": "Door Sensor Offline",
+    "DOOR_FORCE": "Door Impact Detected",
+    "SMOKE_HEARTBEAT": "Smoke Sensor Check-In",
+    "SMOKE_SENSOR_OFFLINE": "Smoke Sensor Offline",
+    "SMOKE_HIGH": "Smoke Warning",
+    "SMOKE_NORMAL": "Smoke Level Back to Normal",
+    "NODE_HEARTBEAT": "Node Check-In",
+    "NODE_OFFLINE": "Node Offline",
+    "CAM_HEARTBEAT": "Camera Check-In",
+    "CAMERA_OFFLINE": "Camera Offline",
+    "CAM_CONTROL_ACK": "Camera Control Acknowledgement",
+    "VISION_HEARTBEAT": "Vision Runtime Check-In",
+    "FLAME_SIGNAL": "Possible Flame Detected",
+    "UNKNOWN": "Unknown Person Detected",
+    "AUTHORIZED": "Authorized Person Detected",
+}
+
+ALERT_LABELS = {
+    "DOOR_FORCE": "Door Force Alert",
+    "DOOR_SENSOR_OFFLINE": "Door Sensor Disconnected",
+    "INTRUDER": "Intrusion Alert",
+    "FIRE": "Fire Alert",
+}
+
+STATUS_LABELS = {
+    "ACTIVE": "Active",
+    "ACK": "Acknowledged",
+    "RESOLVED": "Resolved",
+}
 
 def _parse_iso(ts: str):
     try:
@@ -103,6 +219,434 @@ def _is_online(last_seen_ts: str) -> bool:
     if not dt:
         return False
     return (datetime.now(timezone.utc) - dt).total_seconds() <= NODE_OFFLINE_SECONDS
+
+
+def _display_timezone():
+    tz_name = os.environ.get("DISPLAY_TIMEZONE", "Asia/Manila").strip()
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+def _format_display_time(ts: str, short: bool = False) -> str:
+    if not ts:
+        return "-"
+    dt = _parse_iso(str(ts))
+    if not dt:
+        return str(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local_dt = dt.astimezone(_display_timezone())
+    time_part = local_dt.strftime("%I:%M %p").lstrip("0") or local_dt.strftime("%I:%M %p")
+    date_short = f"{local_dt.strftime('%b')} {local_dt.day}"
+    if short:
+        return f"{date_short}, {time_part}"
+    return f"{date_short}, {local_dt.year}, {time_part}"
+
+
+def _friendly_label(raw: str, labels: dict[str, str]) -> str:
+    key = str(raw or "").strip().upper()
+    if not key:
+        return "-"
+    if key in labels:
+        return labels[key]
+    return key.replace("_", " ").title()
+
+
+def _friendly_event_label(event_type: str) -> str:
+    return _friendly_label(event_type, EVENT_LABELS)
+
+
+def _friendly_alert_label(alert_type: str) -> str:
+    return _friendly_label(alert_type, ALERT_LABELS)
+
+
+def _friendly_status_label(status: str) -> str:
+    return _friendly_label(status, STATUS_LABELS)
+
+
+def _friendly_source_label(source: str) -> str:
+    if not source:
+        return "-"
+    node_id = normalize_node_id(source)
+    meta = get_node_meta(node_id)
+    if meta.get("label"):
+        return meta["label"]
+    raw = str(source).strip()
+    return raw.replace("_", " ").replace("-", " ").title()
+
+
+def _parse_detail_segments(details: str) -> list[str]:
+    return [seg.strip() for seg in str(details or "").split("|") if seg.strip()]
+
+
+def _parse_detail_fields(details: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for seg in _parse_detail_segments(details):
+        if seg.startswith("value="):
+            fields["value_raw"] = seg[len("value="):].strip()
+            continue
+        for token in seg.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            key = key.strip().lower()
+            value = value.strip().strip(",")
+            if key and value:
+                fields[key] = value
+    return fields
+
+
+def _extract_value_and_unit(details: str) -> tuple[str, str]:
+    value_raw = _parse_detail_fields(details).get("value_raw", "")
+    if not value_raw:
+        return "", ""
+    match = re.match(r"^([-+]?\d+(?:\.\d+)?)(.*)$", value_raw)
+    if not match:
+        return value_raw, ""
+    return match.group(1), match.group(2).strip()
+
+
+def _join_phrases(parts: list[str]) -> str:
+    cleaned = [part.strip().rstrip(".") for part in parts if part and part.strip()]
+    if not cleaned:
+        return "-"
+    return ". ".join(cleaned) + "."
+
+
+def _friendly_measurement(event_type: str, details: str, fields: dict[str, str]) -> str:
+    value, unit = _extract_value_and_unit(details)
+    if not value:
+        value = fields.get("ratio", "")
+        unit = "ratio" if value and not unit else unit
+    if not value:
+        return ""
+
+    event_key = str(event_type or "").upper()
+    if event_key == "DOOR_HEARTBEAT":
+        return f"Baseline reading: {value} g"
+    if event_key == "DOOR_FORCE":
+        return f"Trigger score: {value}"
+    if event_key in ("SMOKE_HEARTBEAT", "SMOKE_HIGH", "SMOKE_NORMAL"):
+        return f"Sensor reading: {value}"
+    if event_key == "FLAME_SIGNAL":
+        return f"Detection score: {value}"
+    if unit:
+        return f"Reading: {value} {unit.replace('_', ' ')}"
+    return f"Reading: {value}"
+
+
+def _friendly_event_summary(event_type: str, details: str, source: str = "") -> str:
+    raw_details = str(details or "").strip()
+    if not raw_details:
+        return _friendly_event_label(event_type)
+
+    fields = _parse_detail_fields(raw_details)
+    event_key = str(event_type or "").upper()
+
+    if event_key == "DOOR_HEARTBEAT":
+        parts = ["Door sensor is online"]
+        if fields.get("imu") == "offline":
+            parts.append("Motion chip is not ready yet")
+        elif fields.get("calibrated") == "no":
+            parts.append("Sensor is still calibrating")
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "DOOR_FORCE":
+        parts = ["Door impact or forced movement was detected"]
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "DOOR_SENSOR_OFFLINE":
+        return "Door sensor went offline or was disconnected."
+
+    if event_key == "SMOKE_HEARTBEAT":
+        parts = ["Smoke sensor is online"]
+        if fields.get("latched") == "1":
+            parts.append("Smoke warning remains latched")
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "SMOKE_HIGH":
+        parts = ["Smoke level rose above the warning threshold"]
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "SMOKE_NORMAL":
+        parts = ["Smoke level returned to a safer range"]
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "SMOKE_SENSOR_OFFLINE":
+        return "Smoke sensor went offline or was disconnected."
+
+    if event_key == "CAMERA_OFFLINE":
+        return "Camera node went offline or was disconnected."
+
+    if event_key == "NODE_OFFLINE":
+        return "A sensor or camera node went offline."
+
+    if event_key == "FLAME_SIGNAL":
+        parts = ["Indoor camera detected a possible flame"]
+        measurement = _friendly_measurement(event_key, raw_details, fields)
+        if measurement:
+            parts.append(measurement)
+        return _join_phrases(parts)
+
+    if event_key == "UNKNOWN":
+        faces = fields.get("faces", "")
+        unknown_count = fields.get("unknown", "")
+        parts = ["An unknown person was detected"]
+        if faces and faces.isdigit() and int(faces) > 1:
+            parts.append(f"Faces seen: {faces}")
+        elif unknown_count and unknown_count.isdigit() and int(unknown_count) > 1:
+            parts[0] = "Unknown people were detected"
+            parts.append(f"Unrecognized faces: {unknown_count}")
+        return _join_phrases(parts)
+
+    if event_key == "AUTHORIZED":
+        names = [name.strip().replace("_", " ").title() for name in fields.get("known", "").split(",") if name.strip()]
+        if names:
+            lead = "Authorized person detected" if len(names) == 1 else "Authorized people detected"
+            return _join_phrases([lead, ", ".join(names)])
+        faces = fields.get("faces", "")
+        if faces and faces.isdigit():
+            return _join_phrases(["Authorized face detected", f"Faces seen: {faces}"])
+        return _join_phrases(["Authorized person detected"])
+
+    if raw_details.startswith("threshold_crossed"):
+        return "Smoke level rose above the warning threshold."
+    if raw_details.startswith("returned_below_clear_threshold"):
+        return "Smoke level returned to a safer range."
+
+    return raw_details.replace("|", ". ").strip()
+
+
+def _friendly_alert_summary(alert_type: str, details: str) -> str:
+    raw_details = str(details or "").strip()
+    if not raw_details:
+        return _friendly_alert_label(alert_type)
+
+    alert_key = str(alert_type or "").upper()
+    if alert_key == "INTRUDER" and raw_details.startswith("Evidence:"):
+        evidence_text = raw_details.split(":", 1)[1].strip()
+        mapped = []
+        for item in [part.strip() for part in evidence_text.split(",") if part.strip()]:
+            if item == "outdoor unknown":
+                mapped.append("outdoor camera saw an unknown person")
+            elif item == "indoor unknown":
+                mapped.append("indoor camera saw an unknown person")
+            elif item == "door-force":
+                mapped.append("door sensor detected impact")
+            else:
+                mapped.append(item.replace("-", " "))
+        if mapped:
+            return _join_phrases(["Multiple intrusion signs matched", ", ".join(mapped)])
+
+    if alert_key == "FIRE" and raw_details.startswith("Fusion:"):
+        return "Smoke sensor and indoor flame detection were both triggered."
+
+    if alert_key == "DOOR_FORCE":
+        return _friendly_event_summary("DOOR_FORCE", raw_details)
+
+    if alert_key == "DOOR_SENSOR_OFFLINE":
+        return _friendly_event_summary("DOOR_SENSOR_OFFLINE", raw_details)
+
+    return raw_details.replace("|", ". ").strip()
+
+
+def _severity_label(severity: int) -> str:
+    try:
+        level = int(severity)
+    except Exception:
+        level = 0
+    if level >= 3:
+        return "High"
+    if level == 2:
+        return "Medium"
+    return "Low"
+
+
+def _dashboard_node_counts() -> dict[str, int]:
+    node_rows = list_node_status()
+    node_map = {n["node"]: n for n in node_rows}
+
+    sensors_total = 0
+    sensors_online = 0
+    cameras_total = 0
+    cameras_online = 0
+
+    for node_id, meta in NODE_META.items():
+        if meta.get("kind") == "sensor":
+            sensors_total += 1
+            row = node_map.get(node_id)
+            if row and _is_online(row["last_seen_ts"]):
+                sensors_online += 1
+        elif meta.get("kind") == "camera":
+            cameras_total += 1
+            row = node_map.get(node_id)
+            if row and _is_online(row["last_seen_ts"]):
+                cameras_online += 1
+
+    return {
+        "sensors_total": sensors_total,
+        "sensors_online": sensors_online,
+        "cameras_total": cameras_total,
+        "cameras_online": cameras_online,
+    }
+
+
+def _serialize_alert_row(row) -> dict:
+    return {
+        "id": int(row["id"]),
+        "type": str(row["type"] or ""),
+        "type_label": _friendly_alert_label(row["type"]),
+        "room": str(row["room"] or "-"),
+        "severity": int(row["severity"] or 0),
+        "severity_label": _severity_label(int(row["severity"] or 0)),
+        "status": str(row["status"] or ""),
+        "status_label": _friendly_status_label(row["status"]),
+        "time_label": _format_display_time(row["ts"]),
+        "summary": _friendly_alert_summary(row["type"], row["details"]),
+        "details": str(row["details"] or ""),
+        "detail_url": url_for("alert_details", alert_id=int(row["id"])),
+        "ack_url": url_for("ack", alert_id=int(row["id"])),
+    }
+
+
+def _serialize_event_row(row) -> dict:
+    return {
+        "id": int(row["id"]),
+        "type": str(row["type"] or ""),
+        "type_label": _friendly_event_label(row["type"]),
+        "source": str(row["source"] or ""),
+        "source_label": _friendly_source_label(row["source"]),
+        "room": str(row["room"] or "-"),
+        "time_label": _format_display_time(row["ts"]),
+        "summary": _friendly_event_summary(row["type"], row["details"], row["source"]),
+        "details": str(row["details"] or ""),
+    }
+
+
+def _ui_event_type_from_code(code: str) -> str:
+    key = str(code or "").upper()
+    if key in ("INTRUDER", "UNKNOWN", "DOOR_FORCE"):
+        return "intruder"
+    if key in ("FIRE", "FLAME_SIGNAL", "SMOKE_HIGH", "SMOKE_NORMAL"):
+        return "fire" if key in ("FIRE", "FLAME_SIGNAL") else "sensor"
+    if key == "AUTHORIZED":
+        return "authorized"
+    return "system" if "HEARTBEAT" in key else "sensor"
+
+
+def _ui_severity_from_level(level: int) -> str:
+    try:
+        value = int(level)
+    except Exception:
+        value = 1
+    if value >= 3:
+        return "critical"
+    if value == 2:
+        return "warning"
+    if value <= 0:
+        return "info"
+    return "normal"
+
+
+def _ui_alert_from_alert_row(row) -> dict:
+    alert_type = str(row["type"] or "").upper()
+    event_code = alert_type
+    if alert_type in ("INTRUDER", "FIRE"):
+        event_code = alert_type
+    severity = _ui_severity_from_level(int(row["severity"] or 1))
+    source_guess = "cam_outdoor" if (row["room"] or "") == "Door Entrance Area" else "cam_indoor"
+    return {
+        "id": f"alert-{int(row['id'])}",
+        "timestamp": str(row["ts"] or ""),
+        "severity": severity,
+        "type": _ui_event_type_from_code(event_code),
+        "event_code": event_code,
+        "source_node": source_guess,
+        "location": str(row["room"] or "Door Entrance Area"),
+        "title": _friendly_alert_label(row["type"]),
+        "description": _friendly_alert_summary(row["type"], row["details"]),
+        "acknowledged": str(row["status"] or "").upper() != "ACTIVE",
+        "confidence": None,
+        "response_time_ms": None,
+        "fusion_evidence": [],
+    }
+
+
+def _ui_event_from_event_row(row) -> dict:
+    event_code = str(row["type"] or "").upper()
+    source_raw = str(row["source"] or "")
+    source_guess = source_raw.lower()
+    if source_raw == "CAM_OUTDOOR":
+        source_guess = "cam_outdoor"
+    elif source_raw == "CAM_INDOOR":
+        source_guess = "cam_indoor"
+    elif source_guess == "":
+        source_guess = "unknown"
+    return {
+        "id": f"event-{int(row['id'])}",
+        "timestamp": str(row["ts"] or ""),
+        "severity": "info" if "HEARTBEAT" in event_code else (
+            "warning"
+            if event_code in ("DOOR_FORCE", "SMOKE_HIGH", "FLAME_SIGNAL", "DOOR_SENSOR_OFFLINE", "SMOKE_SENSOR_OFFLINE", "CAMERA_OFFLINE", "NODE_OFFLINE")
+            else "normal"
+        ),
+        "type": _ui_event_type_from_code(event_code),
+        "event_code": event_code,
+        "source_node": source_guess,
+        "location": str(row["room"] or "Door Entrance Area"),
+        "title": _friendly_event_label(row["type"]),
+        "description": _friendly_event_summary(row["type"], row["details"], row["source"]),
+        "acknowledged": True,
+        "confidence": None,
+        "response_time_ms": None,
+        "fusion_evidence": [],
+    }
+
+
+def _runtime_uptime_label() -> str:
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as fh:
+            total_seconds = int(float((fh.read().split() or ["0"])[0]))
+        days, rem = divmod(total_seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, _ = divmod(rem, 60)
+        if days > 0:
+            return f"{days}d {hours}h {minutes}m"
+        return f"{hours}h {minutes}m"
+    except Exception:
+        return "-"
+
+
+def _ui_profile_from_face_row(row) -> dict:
+    created_ts = str(row["created_ts"] or "")
+    enrolled = created_ts.split("T")[0] if "T" in created_ts else created_ts
+    return {
+        "id": f"auth-{int(row['id'])}",
+        "db_id": int(row["id"]),
+        "label": str(row["name"] or f"Face {int(row['id'])}"),
+        "role": "Authorized",
+        "enrolled_at": enrolled or "-",
+        "sample_count": int(row["sample_count"] or 0),
+    }
 
 
 def _ensure_training_dirs() -> None:
@@ -193,6 +737,73 @@ def _save_face_sample(name: str, face_roi):
         "target_reached": count >= FACE_TARGET_SAMPLES,
     }
 
+def _extract_training_face(frame_bgr):
+    candidates = detect_preprocess_faces(frame_bgr)
+    if not candidates:
+        return None, 0, None
+    best = candidates[0]
+    return best["roi"], len(candidates), best["rect"]
+
+def _face_model_version():
+    if not (os.path.exists(LBPH_MODEL_PATH) and os.path.exists(LBPH_LABELS_PATH)):
+        return None
+    return (
+        os.path.getmtime(LBPH_MODEL_PATH),
+        os.path.getmtime(LBPH_LABELS_PATH),
+    )
+
+def _load_face_model_from_disk():
+    if _face_model_version() is None:
+        return None, {}
+    try:
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+    except Exception:
+        return None, {}
+    try:
+        recognizer.read(LBPH_MODEL_PATH)
+        with open(LBPH_LABELS_PATH, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        id_to_name = {int(k): str(v) for k, v in (meta.get("id_to_name", {}) or {}).items()}
+        return recognizer, id_to_name
+    except Exception:
+        return None, {}
+
+def _get_face_model():
+    version = _face_model_version()
+    with _FACE_MODEL_LOCK:
+        if version != _FACE_MODEL_CACHE["version"]:
+            recognizer, id_to_name = _load_face_model_from_disk()
+            _FACE_MODEL_CACHE["version"] = version
+            _FACE_MODEL_CACHE["recognizer"] = recognizer
+            _FACE_MODEL_CACHE["id_to_name"] = id_to_name
+        return _FACE_MODEL_CACHE["recognizer"], dict(_FACE_MODEL_CACHE["id_to_name"])
+
+def _annotate_face_frame(frame_bgr):
+    recognizer, id_to_name = _get_face_model()
+    with _FACE_MODEL_LOCK:
+        detections = analyze_faces(
+            frame_bgr,
+            recognizer=recognizer,
+            id_to_name=id_to_name,
+            unknown_threshold=FACE_UNKNOWN_THRESHOLD,
+        )
+    return draw_face_detections(frame_bgr, detections), detections
+
+def _annotate_face_jpeg(jpeg_bytes: bytes) -> bytes:
+    if not jpeg_bytes:
+        return jpeg_bytes
+    arr = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return jpeg_bytes
+    annotated, _ = _annotate_face_frame(frame)
+    if annotated is None:
+        return jpeg_bytes
+    ok, enc = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), _local_camera_jpeg_quality()])
+    if not ok:
+        return jpeg_bytes
+    return enc.tobytes()
+
 
 def _collect_face_dataset_rows():
     rows = []
@@ -244,7 +855,168 @@ def inject_globals():
         "guest_mode": get_guest_mode(),
         "active_alert_count": count_active_alerts(),
         "telegram_enabled": telegram_is_configured(),
+        "minimal_core_mode": MINIMAL_CORE_MODE,
+        "format_ts": _format_display_time,
+        "event_label": _friendly_event_label,
+        "alert_label": _friendly_alert_label,
+        "status_label": _friendly_status_label,
+        "source_label": _friendly_source_label,
+        "event_summary": _friendly_event_summary,
+        "alert_summary": _friendly_alert_summary,
     }
+
+
+@app.before_request
+def minimal_core_guard():
+    if not MINIMAL_CORE_MODE:
+        return None
+
+    endpoint = request.endpoint or ""
+    if endpoint in CORE_ENDPOINTS or endpoint.startswith("static"):
+        return None
+
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "Endpoint disabled in minimal-core-system branch"}), 404
+
+    if request.method == "GET":
+        flash("This page is disabled in the minimal-core-system branch.", "warning")
+    else:
+        flash("This action is disabled in the minimal-core-system branch.", "warning")
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+def _react_dashboard_ready() -> bool:
+    return REACT_DASHBOARD_ENABLED and os.path.isfile(REACT_DASHBOARD_INDEX)
+
+
+def _serve_react_dashboard(spa_path: str = ""):
+    requested = str(spa_path or "").lstrip("/")
+    dist_root = os.path.abspath(REACT_DASHBOARD_DIST_DIR)
+    if requested:
+        candidate = os.path.abspath(os.path.join(dist_root, requested))
+        if candidate.startswith(dist_root + os.sep) and os.path.isfile(candidate):
+            return send_from_directory(dist_root, requested)
+    return send_from_directory(dist_root, "index.html")
+
+
+def _render_dashboard_template():
+    alerts = list_active_alerts(limit=12)
+    recent_events = list_recent_events(limit=10)
+    node_rows = list_node_status()
+    node_map = {n["node"]: n for n in node_rows}
+
+    nodes = []
+    for node_id, meta in NODE_META.items():
+        row = node_map.get(node_id)
+        last_seen = row["last_seen_ts"] if row else ""
+        nodes.append(
+            {
+                "node": node_id,
+                "label": meta.get("label", node_id),
+                "room": meta.get("room", ""),
+                "kind": meta.get("kind", ""),
+                "role": meta.get("role", ""),
+                "last_seen_ts": last_seen,
+                "note": row["note"] if row else "",
+                "online": _is_online(last_seen),
+            }
+        )
+
+    sensors_total = len([n for n in nodes if n["kind"] == "sensor"])
+    cameras_total = len([n for n in nodes if n["kind"] == "camera"])
+    sensors_online = len([n for n in nodes if n["kind"] == "sensor" and n["online"]])
+    cameras_online = len([n for n in nodes if n["kind"] == "camera" and n["online"]])
+
+    def _event_summary(row):
+        if not row:
+            return None
+        return {
+            "ts": row["ts"],
+            "type": row["type"],
+            "source": row["source"],
+            "room": row["room"],
+            "details": row["details"],
+        }
+
+    room_cards = []
+    for room in ROOMS:
+        room_sensors = [n for n in nodes if n["room"] == room and n["kind"] == "sensor"]
+        room_cameras = [n for n in nodes if n["room"] == room and n["kind"] == "camera"]
+        if room == "Door Entrance Area":
+            latest_unknown = get_latest_event(EVENT_UNKNOWN, source="CAM_OUTDOOR")
+        else:
+            latest_unknown = get_latest_event(EVENT_UNKNOWN, source="CAM_INDOOR")
+
+        room_cards.append(
+            {
+                "room": room,
+                "sensors": room_sensors,
+                "cameras": room_cameras,
+                "latest_smoke": _event_summary(get_latest_event(EVENT_SMOKE_HIGH, room=room)),
+                "latest_flame": _event_summary(get_latest_event(EVENT_FLAME_SIGNAL, room=room)),
+                "latest_door_force": _event_summary(get_latest_event(EVENT_DOOR_FORCE, room=room)),
+                "latest_unknown": _event_summary(latest_unknown),
+            }
+        )
+    outdoor_local_source = _local_camera_source_for("outdoor")
+    indoor_local_source = _local_camera_source_for("indoor")
+    # Avoid rendering the same local capture device as two different cameras.
+    if (
+        outdoor_local_source
+        and indoor_local_source
+        and _coerce_capture_source(outdoor_local_source) == _coerce_capture_source(indoor_local_source)
+    ):
+        outdoor_local_source = ""
+    outdoor_src = _camera_url_for("outdoor")
+    indoor_src = _camera_url_for("indoor")
+
+    # Prefer explicit network stream URL for outdoor camera when available.
+    if outdoor_src:
+        outdoor_url = url_for("camera_frame", which="outdoor")
+        outdoor_mode = "Network Camera"
+        outdoor_is_stream = False
+    elif outdoor_local_source:
+        outdoor_url = url_for("camera_local_stream", which="outdoor")
+        outdoor_mode = "USB Camera"
+        outdoor_is_stream = True
+    else:
+        outdoor_url = ""
+        outdoor_mode = "Not Connected"
+        outdoor_is_stream = False
+
+    if indoor_local_source:
+        indoor_url = url_for("camera_local_stream", which="indoor")
+        indoor_mode = "USB Camera"
+        indoor_is_stream = True
+    elif indoor_src:
+        indoor_url = url_for("camera_frame", which="indoor")
+        indoor_mode = "Network Camera"
+        indoor_is_stream = False
+    else:
+        indoor_url = ""
+        indoor_mode = "Not Connected"
+        indoor_is_stream = False
+
+    camera_refresh_ms = int(os.environ.get("CAMERA_REFRESH_MS", "900"))
+    return render_template(
+        "dashboard.html",
+        alerts=alerts,
+        recent_events=recent_events,
+        nodes=nodes,
+        sensors_total=sensors_total,
+        cameras_total=cameras_total,
+        sensors_online=sensors_online,
+        cameras_online=cameras_online,
+        room_cards=room_cards,
+        outdoor_url=outdoor_url,
+        indoor_url=indoor_url,
+        outdoor_mode=outdoor_mode,
+        indoor_mode=indoor_mode,
+        outdoor_is_stream=outdoor_is_stream,
+        indoor_is_stream=indoor_is_stream,
+        camera_refresh_ms=max(400, camera_refresh_ms),
+    )
+
 
 @app.get("/")
 def home():
@@ -499,6 +1271,7 @@ def camera_frame(which: str):
         jpeg = None
     if not jpeg:
         return Response("camera unavailable", status=503, mimetype="text/plain")
+    jpeg = _annotate_face_jpeg(jpeg)
     resp = Response(jpeg, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -515,6 +1288,7 @@ def camera_local_frame(which: str):
     jpeg = worker.latest_frame()
     if not jpeg:
         return Response("camera unavailable", status=503, mimetype="text/plain")
+    jpeg = _annotate_face_jpeg(jpeg)
     resp = Response(jpeg, mimetype="image/jpeg")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -543,6 +1317,7 @@ def camera_local_stream(which: str):
                 time.sleep(interval * 0.5)
                 continue
             last_sent_ts = ts_value
+            jpeg = _annotate_face_jpeg(jpeg)
             header = (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n"
@@ -558,115 +1333,341 @@ def camera_local_stream(which: str):
 
 # ---- Dashboard / Alerts ----
 @app.get("/dashboard")
-def dashboard():
+@app.get("/dashboard/<path:spa_path>")
+def dashboard(spa_path: str = ""):
+    if _react_dashboard_ready():
+        return _serve_react_dashboard(spa_path)
+    if spa_path:
+        return redirect(url_for("dashboard"))
+    return _render_dashboard_template()
+
+
+@app.get("/dashboard-legacy")
+def dashboard_legacy():
+    return _render_dashboard_template()
+
+
+@app.get("/api/dashboard/live")
+def dashboard_live():
     alerts = list_active_alerts(limit=12)
     recent_events = list_recent_events(limit=10)
-    node_rows = list_node_status()
-    node_map = {n["node"]: n for n in node_rows}
+    counts = _dashboard_node_counts()
+    return jsonify(
+        {
+            "active_alert_count": count_active_alerts(),
+            "sensors_online": counts["sensors_online"],
+            "sensors_total": counts["sensors_total"],
+            "cameras_online": counts["cameras_online"],
+            "cameras_total": counts["cameras_total"],
+            "alerts": [_serialize_alert_row(row) for row in alerts],
+            "recent_events": [_serialize_event_row(row) for row in recent_events],
+        }
+    )
 
-    nodes = []
+
+@app.get("/api/ui/events/live")
+def ui_events_live():
+    try:
+        limit = int(request.args.get("limit", "250"))
+    except Exception:
+        limit = 250
+    limit = max(20, min(limit, 500))
+    event_rows = list_recent_events(limit=limit)
+    alert_rows = list_active_alerts(limit=limit)
+    return jsonify(
+        {
+            "ok": True,
+            "events": [_ui_event_from_event_row(row) for row in event_rows],
+            "alerts": [_ui_alert_from_alert_row(row) for row in alert_rows],
+        }
+    )
+
+
+@app.get("/api/ui/nodes/live")
+def ui_nodes_live():
+    node_rows = list_node_status()
+    node_map = {str(row["node"]): row for row in node_rows}
+
+    sensors: list[dict] = []
+    camera_feeds: list[dict] = []
+
     for node_id, meta in NODE_META.items():
         row = node_map.get(node_id)
-        last_seen = row["last_seen_ts"] if row else ""
-        nodes.append(
+        last_seen = str(row["last_seen_ts"] if row else "")
+        online = _is_online(last_seen)
+        note = str(row["note"] if row and row["note"] else "")
+        role = str(meta.get("role", ""))
+        node_type = "force" if role == "door_force" else ("camera" if meta.get("kind") == "camera" else "smoke")
+        status = "online" if online else "offline"
+        if online and note and any(token in note.lower() for token in ("warn", "retry", "unstable", "high")):
+            status = "warning"
+
+        sensors.append(
             {
-                "node": node_id,
-                "label": meta.get("label", node_id),
-                "room": meta.get("room", ""),
-                "kind": meta.get("kind", ""),
-                "role": meta.get("role", ""),
-                "last_seen_ts": last_seen,
-                "note": row["note"] if row else "",
-                "online": _is_online(last_seen),
+                "id": node_id,
+                "name": str(meta.get("label", node_id)),
+                "location": str(meta.get("room", "")),
+                "type": node_type,
+                "status": status,
+                "last_update": last_seen or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "note": note or ("Recent heartbeat received." if online else "No recent heartbeat."),
             }
         )
 
-    sensors_total = len([n for n in nodes if n["kind"] == "sensor"])
-    cameras_total = len([n for n in nodes if n["kind"] == "camera"])
-    sensors_online = len([n for n in nodes if n["kind"] == "sensor" and n["online"]])
-    cameras_online = len([n for n in nodes if n["kind"] == "camera" and n["online"]])
+        if meta.get("kind") == "camera":
+            which = "outdoor" if node_id == "cam_outdoor" else "indoor"
+            stream_path = ""
+            if _local_camera_source_for(which):
+                stream_path = f"/camera/local/stream/{which}"
+            elif _camera_url_for(which):
+                stream_path = f"/camera/{which}"
 
-    def _event_summary(row):
-        if not row:
-            return None
-        return {
-            "ts": row["ts"],
-            "type": row["type"],
-            "source": row["source"],
-            "room": row["room"],
-            "details": row["details"],
+            camera_feeds.append(
+                {
+                    "location": str(meta.get("room", "")),
+                    "node_id": node_id,
+                    "status": "online" if online else "offline",
+                    "quality": "ESP32-CAM stream",
+                    "fps": 20 if online else 0,
+                    "latency_ms": 150 if online else 0,
+                    "stream_path": stream_path,
+                    "stream_available": bool(stream_path),
+                }
+            )
+
+    latest_event = list_recent_events(limit=1)
+    latest_event_ts = str(latest_event[0]["ts"]) if latest_event else ""
+    ingest_status = "online" if _is_online(latest_event_ts) else "warning"
+    online_nodes = len([node for node in sensors if node["status"] == "online"])
+    mqtt_status = "connected" if online_nodes > 0 else "disconnected"
+
+    services = [
+        {
+            "id": "service-001",
+            "name": "Mosquitto Broker",
+            "status": "online" if mqtt_status == "connected" else "warning",
+            "endpoint": f"mqtt://{os.environ.get('MQTT_BROKER_HOST', '127.0.0.1').strip()}:{int(os.environ.get('MQTT_BROKER_PORT', '1883'))}",
+            "last_update": latest_event_ts or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "detail": f"Topic root: {os.environ.get('MQTT_TOPIC_ROOT', 'thesis/v1').strip() or 'thesis/v1'}",
+        },
+        {
+            "id": "service-002",
+            "name": "MQTT Ingest Service",
+            "status": ingest_status,
+            "endpoint": "pi/mqtt_ingest.py",
+            "last_update": latest_event_ts or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "detail": "Forwarding sensor payloads to POST /api/sensors/event",
+        },
+        {
+            "id": "service-003",
+            "name": "Flask API + Dashboard",
+            "status": "online",
+            "endpoint": "pi/app.py",
+            "last_update": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "detail": "Core API, fusion logic, and UI endpoints active",
+        },
+    ]
+
+    vision_event = get_latest_event("VISION_HEARTBEAT")
+    vision_last = str(vision_event["ts"]) if vision_event else ""
+    vision_status = "online" if _is_online(vision_last) else "warning"
+    services.append(
+        {
+            "id": "service-004",
+            "name": "Vision Runtime",
+            "status": vision_status,
+            "endpoint": "pi/vision_runtime.py",
+            "last_update": vision_last or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "detail": "OpenCV face/flame pipeline heartbeat",
         }
+    )
 
-    room_cards = []
-    for room in ROOMS:
-        room_sensors = [n for n in nodes if n["room"] == room and n["kind"] == "sensor"]
-        room_cameras = [n for n in nodes if n["room"] == room and n["kind"] == "camera"]
-        if room == "Door Entrance Area":
-            latest_unknown = get_latest_event(EVENT_UNKNOWN, source="CAM_OUTDOOR")
-        else:
-            latest_unknown = get_latest_event(EVENT_UNKNOWN, source="CAM_INDOOR")
+    detection_pipelines = [
+        {
+            "name": "Face Recognition (OpenCV LBPH)",
+            "state": "active" if vision_status == "online" else "degraded",
+            "detail": "Authorized vs unknown classification",
+        },
+        {
+            "name": "Visual Flame Detection",
+            "state": "active" if vision_status == "online" else "degraded",
+            "detail": "Indoor flame signal inference",
+        },
+        {
+            "name": "Smoke Sensor Ingest (MQ-2)",
+            "state": "active" if len([n for n in sensors if n["type"] == "smoke" and n["status"] == "online"]) > 0 else "degraded",
+            "detail": "MQTT sensor payload monitoring",
+        },
+        {
+            "name": "Door-Force Event Monitor",
+            "state": "active" if any(n["id"] == "door_force" and n["status"] == "online" for n in sensors) else "degraded",
+            "detail": "Door impact threshold trigger monitor",
+        },
+    ]
 
-        room_cards.append(
+    return jsonify(
+        {
+            "ok": True,
+            "sensor_statuses": sensors,
+            "service_statuses": services,
+            "camera_feeds": camera_feeds,
+            "detection_pipelines": detection_pipelines,
+            "system_health": {
+                "raspberryPi": "online",
+                "mqtt": mqtt_status,
+                "ingest": "online" if ingest_status == "online" else "offline",
+                "last_sync": latest_event_ts or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "uptime": _runtime_uptime_label(),
+            },
+        }
+    )
+
+
+@app.get("/api/ui/stats/daily")
+def ui_stats_daily():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    days = max(1, min(days, 31))
+
+    today = datetime.now(timezone.utc).date()
+    series = []
+    for offset in range(days - 1, -1, -1):
+        date_str = (today - timedelta(days=offset)).isoformat()
+        summary = summary_for_date(date_str)
+        events = {str(item["type"]): int(item["c"]) for item in summary.get("events_by_type", [])}
+        alerts = {}
+        for item in summary.get("alerts_by_type_status", []):
+            alert_key = str(item.get("type", ""))
+            alerts[alert_key] = alerts.get(alert_key, 0) + int(item.get("c", 0))
+
+        series.append(
             {
-                "room": room,
-                "sensors": room_sensors,
-                "cameras": room_cameras,
-                "latest_smoke": _event_summary(get_latest_event(EVENT_SMOKE_HIGH, room=room)),
-                "latest_flame": _event_summary(get_latest_event(EVENT_FLAME_SIGNAL, room=room)),
-                "latest_door_force": _event_summary(get_latest_event(EVENT_DOOR_FORCE, room=room)),
-                "latest_unknown": _event_summary(latest_unknown),
+                "date": date_str,
+                "authorized_faces": events.get("AUTHORIZED", 0),
+                "unknown_detections": events.get("UNKNOWN", 0),
+                "flame_signals": events.get("FLAME_SIGNAL", 0),
+                "smoke_high_events": events.get("SMOKE_HIGH", 0),
+                "fire_alerts": alerts.get("FIRE", 0),
+                "intruder_alerts": alerts.get("INTRUDER", 0),
+                "avg_response_seconds": 0.0,
             }
         )
-    outdoor_local_source = _local_camera_source_for("outdoor")
-    indoor_local_source = _local_camera_source_for("indoor")
-    outdoor_src = _camera_url_for("outdoor")
-    indoor_src = _camera_url_for("indoor")
 
-    if outdoor_local_source:
-        outdoor_url = url_for("camera_local_stream", which="outdoor")
-        outdoor_mode = "USB Camera"
-        outdoor_is_stream = True
-    elif outdoor_src:
-        outdoor_url = url_for("camera_frame", which="outdoor")
-        outdoor_mode = "Network Camera"
-        outdoor_is_stream = False
-    else:
-        outdoor_url = ""
-        outdoor_mode = "Not Connected"
-        outdoor_is_stream = False
+    return jsonify({"ok": True, "days": days, "stats": series})
 
-    if indoor_local_source:
-        indoor_url = url_for("camera_local_stream", which="indoor")
-        indoor_mode = "USB Camera"
-        indoor_is_stream = True
-    elif indoor_src:
-        indoor_url = url_for("camera_frame", which="indoor")
-        indoor_mode = "Network Camera"
-        indoor_is_stream = False
-    else:
-        indoor_url = ""
-        indoor_mode = "Not Connected"
-        indoor_is_stream = False
 
-    camera_refresh_ms = int(os.environ.get("CAMERA_REFRESH_MS", "900"))
-    return render_template(
-        "dashboard.html",
-        alerts=alerts,
-        recent_events=recent_events,
-        nodes=nodes,
-        sensors_total=sensors_total,
-        cameras_total=cameras_total,
-        sensors_online=sensors_online,
-        cameras_online=cameras_online,
-        room_cards=room_cards,
-        outdoor_url=outdoor_url,
-        indoor_url=indoor_url,
-        outdoor_mode=outdoor_mode,
-        indoor_mode=indoor_mode,
-        outdoor_is_stream=outdoor_is_stream,
-        indoor_is_stream=indoor_is_stream,
-        camera_refresh_ms=max(400, camera_refresh_ms),
+@app.get("/api/ui/settings/live")
+def ui_settings_live():
+    profiles = [_ui_profile_from_face_row(row) for row in list_faces()]
+
+    runtime_settings = [
+        {
+            "key": "SENSOR_EVENT_URL",
+            "value": os.environ.get("SENSOR_EVENT_URL", "http://127.0.0.1:5000/api/sensors/event"),
+            "description": "Sensor event API endpoint",
+        },
+        {
+            "key": "MQTT_TOPIC_ROOT",
+            "value": os.environ.get("MQTT_TOPIC_ROOT", "thesis/v1"),
+            "description": "MQTT publish/subscribe root topic",
+        },
+        {
+            "key": "FIRE_FUSION_WINDOW",
+            "value": f"{os.environ.get('FIRE_FUSION_WINDOW', '120')} seconds",
+            "description": "Smoke + flame correlation window",
+        },
+        {
+            "key": "INTRUDER_FUSION_WINDOW",
+            "value": f"{os.environ.get('INTRUDER_FUSION_WINDOW', '120')} seconds",
+            "description": "Unknown + door evidence correlation window",
+        },
+        {
+            "key": "ALERT_COOLDOWN",
+            "value": f"{os.environ.get('ALERT_COOLDOWN', '45')} seconds",
+            "description": "Intruder alert cooldown interval",
+        },
+        {
+            "key": "FIRE_COOLDOWN",
+            "value": f"{os.environ.get('FIRE_COOLDOWN', '75')} seconds",
+            "description": "Fire alert cooldown interval",
+        },
+    ]
+
+    return jsonify(
+        {
+            "ok": True,
+            "guest_mode": get_guest_mode(),
+            "authorized_profiles": profiles,
+            "runtime_settings": runtime_settings,
+        }
     )
+
+
+@app.get("/api/faces")
+def api_faces_list():
+    profiles = [_ui_profile_from_face_row(row) for row in list_faces()]
+    return jsonify({"ok": True, "faces": profiles})
+
+
+@app.post("/api/faces")
+def api_faces_create():
+    payload = request.get_json(silent=True) or {}
+    name = _safe_name(payload.get("name", ""))
+    note = str(payload.get("note", "")).strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Name is required."}), 400
+
+    existing_id = None
+    for row in list_faces():
+        row_name = str(row["name"] or "").strip().lower()
+        if row_name == name.lower():
+            existing_id = int(row["id"])
+            break
+
+    face_id = existing_id if existing_id is not None else create_face(name=name, is_authorized=True, note=note)
+    face_row = get_face(face_id)
+    if not face_row:
+        return jsonify({"ok": False, "error": "Failed to load face profile."}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "created": existing_id is None,
+            "face": _ui_profile_from_face_row(face_row),
+        }
+    )
+
+
+@app.delete("/api/faces/<int:face_id>")
+def api_faces_delete(face_id: int):
+    ok = delete_face(face_id)
+    if not ok:
+        return jsonify({"ok": False, "error": "Face not found.", "face_id": face_id}), 404
+    return jsonify({"ok": True, "face_id": face_id})
+
+
+@app.get("/api/training/face/status")
+def api_training_face_status():
+    return training_face_status()
+
+
+@app.post("/api/training/face/capture")
+def api_training_face_capture():
+    return training_face_capture()
+
+
+@app.post("/api/training/face/train")
+def api_training_face_train():
+    ok, msg = _run_face_training()
+    response = {
+        "ok": ok,
+        "message": msg[:4000],
+        "model_path": LBPH_MODEL_PATH if ok else "",
+    }
+    return jsonify(response), (200 if ok else 500)
+
 
 @app.get("/alert/<int:alert_id>")
 def alert_details(alert_id: int):
@@ -685,9 +1686,9 @@ def ack(alert_id: int):
 
     ok = ack_alert(alert_id, status=status)
     if ok:
-        flash(f"Alert #{alert_id} set to {status}.", "success")
+        flash(f"Alert #{alert_id} set to {_friendly_status_label(status)}.", "success")
     else:
-        flash(f"Alert #{alert_id} was not ACTIVE (nothing changed).", "warning")
+        flash(f"Alert #{alert_id} was not active, so nothing changed.", "warning")
     return redirect(request.referrer or url_for("dashboard"))
 
 @app.get("/history")
@@ -716,6 +1717,12 @@ def events():
 # ---- Sensor Ingestion ----
 @app.post("/api/sensors/event")
 def sensors_event():
+    api_key_required = os.environ.get("SENSOR_API_KEY", "").strip()
+    if api_key_required:
+        req_key = request.headers.get("X-API-KEY", "").strip()
+        if req_key != api_key_required:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+
     payload = request.get_json(silent=True) or {}
     raw_node = str(payload.get("node", "")).strip()
     event = str(payload.get("event", "")).strip().upper()
@@ -740,13 +1747,34 @@ def sensors_event():
     details = " | ".join(details_bits)
 
     ts_iso = ts or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    create_event(event, source=node_id, details=details, ts=ts_iso, room=room)
+    event_source = node_id
+    if node_id == "cam_outdoor":
+        event_source = "CAM_OUTDOOR"
+    elif node_id == "cam_indoor":
+        event_source = "CAM_INDOOR"
+
+    create_event(event, source=event_source, details=details, ts=ts_iso, room=room)
     update_node_seen(node_id, note=details or event, ts=ts_iso)
     alert_id = None
     if event == EVENT_SMOKE_HIGH:
         alert_id = handle_fire_signal(ts_iso, room=room)
+    elif event == EVENT_FLAME_SIGNAL:
+        alert_id = handle_fire_signal(ts_iso, room=room)
     elif event == EVENT_DOOR_FORCE:
+        alert_id = handle_door_force_signal(ts_iso, room=room)
+    elif event == EVENT_UNKNOWN:
         alert_id = handle_intruder_evidence(ts_iso, room=room)
+    elif event == "DOOR_SENSOR_OFFLINE":
+        cooldown = int(os.environ.get("DOOR_OFFLINE_ALERT_COOLDOWN_SECONDS", "300"))
+        if not has_recent_alert("DOOR_SENSOR_OFFLINE", within_seconds=cooldown, ts=ts_iso, room=room):
+            alert_id = create_alert(
+                "DOOR_SENSOR_OFFLINE",
+                room=room,
+                severity=2,
+                status="ACTIVE",
+                details=details or "door_force reported offline (MQTT LWT/status).",
+                ts=ts_iso,
+            )
 
     return jsonify({"ok": True, "node": node_id, "event": event, "room": room, "alert_id": alert_id})
 
@@ -916,6 +1944,7 @@ def training_face_status():
             "target": FACE_TARGET_SAMPLES,
             "remaining": max(0, FACE_TARGET_SAMPLES - count),
             "ready": count >= FACE_MIN_SAMPLES,
+            "target_reached": count >= FACE_TARGET_SAMPLES,
         }
     )
 
@@ -934,11 +1963,16 @@ def training_face_capture():
     if frame is None:
         return jsonify({"ok": False, "error": "Invalid frame payload."}), 400
 
-    face_roi = extract_face_roi(frame)
+    face_roi, faces_detected, best_rect = _extract_training_face(frame)
     validation_error = _validate_face_roi(face_roi)
     if validation_error:
         return jsonify({"ok": False, "error": validation_error}), 422
-    return jsonify(_save_face_sample(name, face_roi))
+    result = _save_face_sample(name, face_roi)
+    result["faces_detected"] = int(faces_detected)
+    if best_rect:
+        x, y, w, h = best_rect
+        result["face_box"] = {"x": x, "y": y, "w": w, "h": h}
+    return jsonify(result)
 
 
 @app.post("/training/face/capture_pi")
@@ -964,11 +1998,16 @@ def training_face_capture_pi():
     if frame is None:
         return jsonify({"ok": False, "error": "Failed to read frame from external source."}), 422
 
-    face_roi = extract_face_roi(frame)
+    face_roi, faces_detected, best_rect = _extract_training_face(frame)
     validation_error = _validate_face_roi(face_roi)
     if validation_error:
         return jsonify({"ok": False, "error": validation_error}), 422
-    return jsonify(_save_face_sample(name, face_roi))
+    result = _save_face_sample(name, face_roi)
+    result["faces_detected"] = int(faces_detected)
+    if best_rect:
+        x, y, w, h = best_rect
+        result["face_box"] = {"x": x, "y": y, "w": w, "h": h}
+    return jsonify(result)
 
 
 @app.post("/training/face/train")

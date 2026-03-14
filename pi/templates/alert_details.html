@@ -1,25 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-3">
+  <div class="d-flex flex-wrap gap-2 justify-content-between align-items-end mb-4">
     <div>
-      <h3 class="mb-1">Alert #{{ alert["id"] }}</h3>
-      <div class="text-secondary">
-        <span class="badge text-bg-dark-subtle border">{{ alert["type"] }}</span>
-        {% if alert["room"] %} • {{ alert["room"] }}{% endif %}
-        •
-        {% set status_label = "Active" if alert["status"] == "ACTIVE" else ("Acknowledged" if alert["status"] == "ACK" else "Resolved") %}
-        <span class="badge text-bg-secondary">{{ status_label }}</span>
+      <h3 class="page-title">Alert #{{ alert["id"] }}</h3>
+      <div class="page-subtitle">
+        {{ alert_label(alert["type"]) }}{% if alert["room"] %} in {{ alert["room"] }}{% endif %}
       </div>
     </div>
     <div class="d-flex gap-2 flex-wrap">
-      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}"><i class="bi bi-arrow-left me-1"></i>Back</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back</a>
       {% if alert["status"] == "ACTIVE" %}
       <form method="post" action="{{ url_for('ack', alert_id=alert['id']) }}" class="d-flex gap-2">
         <select name="status" class="form-select" style="max-width: 160px;">
-          <option value="ACK">Acknowledged</option>
-          <option value="RESOLVED">Resolved</option>
+          <option value="ACK">Acknowledge</option>
+          <option value="RESOLVED">Resolve</option>
         </select>
-        <button class="btn btn-primary" type="submit"><i class="bi bi-check2-circle me-1"></i>Mark as Handled</button>
+        <button class="btn btn-primary" type="submit">Apply</button>
       </form>
       {% endif %}
     </div>
@@ -33,36 +29,29 @@
           <img class="card-img-top object-fit-cover" style="max-height: 320px;"
                src="{{ url_for('serve_snapshot', filename=rel) }}" alt="alert snapshot">
         {% else %}
-          <div class="p-4 text-center text-secondary">No photo attached yet.</div>
+          <div class="p-4 text-center text-secondary">No image attached.</div>
         {% endif %}
-
         <div class="card-body">
           <div class="row g-3">
             <div class="col-6">
-              <div class="small text-secondary">Level</div>
-              {% if alert["severity"]|int >= 3 %}
-                <span class="badge text-bg-danger">High</span>
-              {% elif alert["severity"]|int == 2 %}
-                <span class="badge text-bg-warning">Med</span>
-              {% else %}
-                <span class="badge text-bg-success">Low</span>
-              {% endif %}
+              <div class="small text-secondary">Status</div>
+              <div>{{ status_label(alert["status"]) }}</div>
             </div>
             <div class="col-6">
-              <div class="small text-secondary">Time</div>
-              <div class="font-monospace small">{{ alert["ts"] }}</div>
+              <div class="small text-secondary">Severity</div>
+              <div>{{ alert["severity"] }}</div>
             </div>
             <div class="col-6">
-              <div class="small text-secondary">Handled time</div>
-              <div class="font-monospace small">{{ alert["ack_ts"] or "-" }}</div>
+              <div class="small text-secondary">Created</div>
+              <div class="small">{{ format_ts(alert["ts"]) }}</div>
             </div>
             <div class="col-6">
-              <div class="small text-secondary">Area</div>
-              <div>{{ alert["room"] or "-" }}</div>
+              <div class="small text-secondary">Handled</div>
+              <div class="small">{{ format_ts(alert["ack_ts"]) if alert["ack_ts"] else "-" }}</div>
             </div>
             <div class="col-12">
-              <div class="small text-secondary">Notes</div>
-              <div class="text-break">{{ alert["details"] or "" }}</div>
+              <div class="small text-secondary">Summary</div>
+              <div class="text-break" title="{{ alert['details'] or '' }}">{{ alert_summary(alert["type"], alert["details"]) }}</div>
             </div>
           </div>
         </div>
@@ -71,13 +60,11 @@
       {% if snapshots|length > 0 %}
         <div class="card shadow-sm mt-3">
           <div class="card-body">
-            <div class="fw-semibold mb-2">Related Photos</div>
+            <div class="fw-semibold mb-2">Related Images</div>
             <div class="d-flex flex-wrap gap-2">
               {% for s in snapshots %}
-                <a href="{{ url_for('snapshot_details', snapshot_id=s['id']) }}" class="text-decoration-none">
-                  <img src="{{ url_for('serve_snapshot', filename=s['file_relpath']) }}"
-                       class="rounded border object-fit-cover" style="width: 96px; height: 64px;" alt="snap">
-                </a>
+                <img src="{{ url_for('serve_snapshot', filename=s['file_relpath']) }}"
+                     class="rounded border object-fit-cover" style="width: 96px; height: 64px;" alt="snapshot">
               {% endfor %}
             </div>
           </div>
@@ -91,33 +78,33 @@
           <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
             <div>
               <div class="fw-semibold">Nearby Activity</div>
-              <div class="text-secondary small">Activity around this time (about 10 minutes before/after).</div>
+              <div class="text-secondary small">Events around the same time window.</div>
             </div>
-            <div class="text-secondary small font-monospace">{{ win_start }} → {{ win_end }}</div>
+            <div class="text-secondary small">{{ format_ts(win_start) }} to {{ format_ts(win_end) }}</div>
           </div>
 
           <hr class="my-3">
 
           {% if near_events|length == 0 %}
-            <div class="text-secondary">No nearby activity found.</div>
+            <div class="text-secondary">No nearby events found.</div>
           {% else %}
             <div class="table-responsive">
               <table class="table table-sm table-hover align-middle mb-0">
                 <thead>
                   <tr>
-                    <th style="width: 220px;">Time</th>
-                    <th style="width: 200px;">What</th>
-                    <th style="width: 200px;">Device</th>
-                    <th>Notes</th>
+                    <th>Time</th>
+                    <th>Event</th>
+                    <th>Source</th>
+                    <th>Summary</th>
                   </tr>
                 </thead>
                 <tbody>
                   {% for e in near_events %}
                   <tr>
-                    <td class="font-monospace small">{{ e["ts"] }}</td>
-                    <td><span class="badge text-bg-dark-subtle border">{{ e["type"] }}</span></td>
-                    <td><span class="badge text-bg-secondary-subtle border">{{ e["source"] }}</span></td>
-                    <td class="text-break">{{ e["details"] or "" }}</td>
+                    <td class="small">{{ format_ts(e["ts"]) }}</td>
+                    <td>{{ event_label(e["type"]) }}</td>
+                    <td>{{ source_label(e["source"]) }}</td>
+                    <td title="{{ e['details'] or '' }}">{{ event_summary(e["type"], e["details"], e["source"]) }}</td>
                   </tr>
                   {% endfor %}
                 </tbody>

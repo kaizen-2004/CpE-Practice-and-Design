@@ -1,0 +1,3 @@
+# Phase 1: System Context, Scope, and Architecture Design
+
+Researchers first review the literature and then take a close look at the condominium to figure out what kinds of threats could be expected from intruders or fire. They also design a split-host architecture and deployment plan, where Raspberry Pi 2 hosts the local server stack and a second-hand laptop runs face/fire vision modules, including ESP32-CAM (outdoor) and distributed ESP32-C3 sensor nodes (MQ-2 smoke nodes and GY-LSM6DS3 door node). No numbers are recorded at this point; the outputs are basically design documents and diagrams.

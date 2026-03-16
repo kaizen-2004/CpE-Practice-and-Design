@@ -45,6 +45,15 @@ export interface FaceTrainingStatus {
   error?: string;
 }
 
+export type CameraControlCommand = 'flash_on' | 'flash_off' | 'status';
+
+export interface CameraControlResult {
+  ok: boolean;
+  nodeId: string;
+  command: CameraControlCommand;
+  topic: string;
+}
+
 function toInt(value: unknown, fallback = 0): number {
   const asNumber = Number(value);
   return Number.isFinite(asNumber) ? Math.trunc(asNumber) : fallback;
@@ -283,6 +292,27 @@ export async function fetchSettingsLive(): Promise<LiveSettingsPayload> {
     guestMode: Boolean(payload.guest_mode),
     authorizedProfiles: profilesRaw.map((row) => mapProfile(row as Json)),
     runtimeSettings: settingsRaw.map((row) => mapRuntimeSetting(row as Json)),
+  };
+}
+
+export async function sendCameraControl(
+  nodeId: string,
+  command: CameraControlCommand,
+): Promise<CameraControlResult> {
+  const payload = await fetchJson<Json>('/api/ui/camera/control', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      node_id: nodeId,
+      command,
+    }),
+  });
+
+  return {
+    ok: Boolean(payload.ok),
+    nodeId: String(payload.node_id ?? nodeId),
+    command: String(payload.command ?? command) as CameraControlCommand,
+    topic: String(payload.topic ?? ''),
   };
 }
 

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import cv2
+import numpy as np
 
 from config import (
     EVENT_AUTHORIZED,
@@ -19,7 +21,7 @@ from config import (
     MQTT_BROKER_USERNAME,
     MQTT_TOPIC_ROOT,
 )
-from db import create_event, create_snapshot, init_db, update_node_seen
+from db import create_event, create_snapshot, init_db, list_node_status, list_recent_events, update_node_seen
 from fire_utils import detect_flame_signal, load_fire_model
 from fusion import handle_fire_signal, handle_intruder_evidence
 from vision_utils import analyze_faces, draw_face_detections, save_frame_snapshot
@@ -125,9 +127,86 @@ def _coerce_capture_source(source):
     return s
 
 
+def _open_capture(source_value):
+    source = _coerce_capture_source(source_value)
+    is_local_device = isinstance(source, int)
+    if isinstance(source, str) and source.startswith("/dev/video"):
+        is_local_device = True
+    if is_local_device:
+        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(source)
+
+
+def _stream_url_from_note(note: str) -> str:
+    raw = str(note or "").strip()
+    if not raw:
+        return ""
+
+    full_url = re.search(r"stream=(https?://[^\s|]+)", raw)
+    if full_url:
+        return full_url.group(1).strip()
+
+    ip_match = re.search(r"\bip=([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b", raw)
+    if not ip_match:
+        return ""
+    host = ip_match.group(1).strip()
+
+    stream_match = re.search(r"stream=([^\s|]+)", raw)
+    if stream_match:
+        stream_raw = stream_match.group(1).strip()
+        if stream_raw.startswith(("http://", "https://")):
+            return stream_raw
+        if stream_raw.startswith(":") or stream_raw.startswith("/"):
+            return f"http://{host}{stream_raw}"
+
+    return f"http://{host}:81/stream"
+
+
+def _discover_stream_from_node(node_id: str) -> str:
+    key = str(node_id or "").strip().lower()
+    if not key:
+        return ""
+    try:
+        for row in list_node_status():
+            row_node = str(row["node"] or "").strip().lower()
+            if row_node != key:
+                continue
+            url = _stream_url_from_note(str(row["note"] or ""))
+            if url:
+                return url
+    except Exception:
+        pass
+
+    source = "CAM_OUTDOOR" if key == "cam_outdoor" else "CAM_INDOOR" if key == "cam_indoor" else ""
+    if not source:
+        return ""
+    try:
+        for row in list_recent_events(limit=240):
+            if str(row.get("source", "")).strip().upper() != source:
+                continue
+            url = _stream_url_from_note(str(row.get("details", "") or ""))
+            if url:
+                return url
+    except Exception:
+        return ""
+    return ""
+
+
 def _resolve_sources(args):
     outdoor = args.outdoor_url
     indoor = args.indoor_url
+
+    if _is_empty(outdoor):
+        outdoor = _discover_stream_from_node("cam_outdoor")
+    if _is_empty(indoor):
+        indoor = _discover_stream_from_node("cam_indoor")
+
+    # Allow indoor-only testing when outdoor stream is not available yet.
+    if _is_empty(outdoor) and not _is_empty(indoor):
+        outdoor = indoor
 
     if args.camera_mode == "webcam":
         if _is_empty(outdoor):
@@ -144,6 +223,14 @@ def _resolve_sources(args):
     return outdoor, indoor
 
 
+def _stream_note(base_note: str, source_value) -> str:
+    note = str(base_note or "").strip() or "opencv loop"
+    src = str(source_value or "").strip()
+    if src.startswith(("http://", "https://")):
+        return f"{note} | stream={src}"
+    return note
+
+
 def _sources_match(a, b) -> bool:
     if _is_empty(a) or _is_empty(b):
         return False
@@ -156,6 +243,38 @@ def _source_for_node(node_id: str) -> str:
     if node_id == "cam_indoor":
         return "CAM_INDOOR"
     return node_id
+
+
+def _fetch_single_jpeg(src_url: str, timeout_seconds: float = 6.0) -> Optional[bytes]:
+    req = urllib.request.Request(src_url, headers={"User-Agent": "VisionRuntime/1.0"})
+    started = time.time()
+    buf = b""
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as upstream:
+        while (time.time() - started) < timeout_seconds:
+            chunk = upstream.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            soi = buf.find(b"\xff\xd8")
+            if soi != -1:
+                eoi = buf.find(b"\xff\xd9", soi + 2)
+                if eoi != -1:
+                    return buf[soi : eoi + 2]
+            if len(buf) > 2_000_000:
+                buf = buf[-256_000:]
+    return None
+
+
+def _read_http_snapshot_frame(src_url: str, timeout_seconds: float = 4.0):
+    try:
+        raw = _fetch_single_jpeg(src_url, timeout_seconds=timeout_seconds)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    return frame
 
 
 def _post_event_api(payload: dict, api_url: str, api_key: str, timeout: float = 4.0) -> tuple[bool, str]:
@@ -369,7 +488,7 @@ def main():
 
     outdoor_src, indoor_src = _resolve_sources(args)
 
-    outdoor = cv2.VideoCapture(_coerce_capture_source(outdoor_src))
+    outdoor = _open_capture(outdoor_src)
     if not outdoor.isOpened():
         raise SystemExit(f"❌ Cannot open outdoor stream: {outdoor_src}")
 
@@ -381,7 +500,7 @@ def main():
             reuse_outdoor_for_indoor = True
             print("ℹ️  Indoor source matches outdoor source. Reusing one camera capture for both feeds.")
         else:
-            indoor = cv2.VideoCapture(_coerce_capture_source(indoor_src))
+            indoor = _open_capture(indoor_src)
             if not indoor.isOpened():
                 print(f"⚠️  Cannot open indoor stream: {indoor_src} (continuing with outdoor only)")
                 indoor = None
@@ -409,65 +528,111 @@ def main():
     else:
         print("ℹ️  Fire model not loaded. Indoor flame detection is disabled until fire training.")
 
+    outdoor_fail_count = 0
+    indoor_fail_count = 0
+    indoor_enabled = not _is_empty(indoor_src)
+    outdoor_is_http = str(outdoor_src).strip().startswith(("http://", "https://"))
+    indoor_is_http = str(indoor_src).strip().startswith(("http://", "https://"))
+
     try:
         while True:
-            ok, frame = outdoor.read()
-            if not ok or frame is None:
-                time.sleep(0.2)
-                continue
+            try:
+                ok, frame = outdoor.read()
+                if not ok or frame is None:
+                    if outdoor_is_http:
+                        frame = _read_http_snapshot_frame(str(outdoor_src), timeout_seconds=3.0)
+                        ok = frame is not None
+                    if not ok or frame is None:
+                        outdoor_fail_count += 1
+                        if outdoor_fail_count == 1 or outdoor_fail_count % 15 == 0:
+                            print(f"⚠️  Outdoor read failed (fail={outdoor_fail_count}), reconnecting...")
+                        if outdoor is not None:
+                            outdoor.release()
+                        time.sleep(0.6)
+                        outdoor = _open_capture(outdoor_src)
+                        if not outdoor.isOpened():
+                            time.sleep(1.2)
+                        continue
 
-            frame_i += 1
-            if frame_i % args.process_every != 0:
-                continue
+                outdoor_fail_count = 0
 
-            current_model_version = _lbph_version()
-            if current_model_version != model_version:
-                recognizer, id_to_name = load_lbph()
-                model_version = current_model_version
-                print("🔄 Reloaded LBPH model after retrain.")
+                frame_i += 1
+                if frame_i % args.process_every != 0:
+                    continue
 
-            if os.path.exists(FIRE_MODEL_PATH):
-                fm = os.path.getmtime(FIRE_MODEL_PATH)
-                if fm != fire_model_mtime:
-                    fire_model = load_fire_model(FIRE_MODEL_PATH)
-                    fire_model_mtime = fm
-                    fire_threshold = args.fire_ratio_threshold if args.fire_ratio_threshold > 0 else (float(fire_model["ratio_threshold"]) if fire_model else 0.0)
-                    print(f"🔄 Reloaded fire model (threshold={fire_threshold:.4f}).")
+                current_model_version = _lbph_version()
+                if current_model_version != model_version:
+                    recognizer, id_to_name = load_lbph()
+                    model_version = current_model_version
+                    print("🔄 Reloaded LBPH model after retrain.")
 
-            ts = _iso_utc()
-            emitter.emit_status("cam_outdoor", note="opencv loop", ts=ts)
+                if os.path.exists(FIRE_MODEL_PATH):
+                    fm = os.path.getmtime(FIRE_MODEL_PATH)
+                    if fm != fire_model_mtime:
+                        fire_model = load_fire_model(FIRE_MODEL_PATH)
+                        fire_model_mtime = fm
+                        fire_threshold = args.fire_ratio_threshold if args.fire_ratio_threshold > 0 else (float(fire_model["ratio_threshold"]) if fire_model else 0.0)
+                        print(f"🔄 Reloaded fire model (threshold={fire_threshold:.4f}).")
 
-            detections = analyze_faces(frame, recognizer=recognizer, id_to_name=id_to_name, unknown_threshold=args.unknown_threshold)
-            if len(detections) == 0:
-                unknown_streak_outdoor = max(0, unknown_streak_outdoor - 1)
-            else:
-                unknown_faces = [d for d in detections if d.get("label") == "UNKNOWN"]
-                if unknown_faces:
-                    unknown_streak_outdoor += 1
-                    primary_unknown = max(unknown_faces, key=lambda d: float(d.get("confidence", 999.0)))
-                    conf = float(primary_unknown.get("confidence", 999.0))
-                    details = _face_event_details(detections)
-                    emitter.emit_event("cam_outdoor", EVENT_UNKNOWN, "Door Entrance Area", details, ts=ts)
+                ts = _iso_utc()
+                emitter.emit_status("cam_outdoor", note=_stream_note("opencv loop", outdoor_src), ts=ts)
 
-                    if unknown_streak_outdoor in (1, 6, args.unknown_streak):
-                        overlay = draw_face_detections(frame, detections)
-                        rel, _ = save_frame_snapshot(
-                            overlay if overlay is not None else frame,
-                            prefix=f"outdoor_unknown_{unknown_streak_outdoor}",
-                            ts_iso=ts,
-                        )
-                        create_snapshot("FACE_UNKNOWN", "UNKNOWN", rel, linked_alert_id=None, note=f"{details} | conf={conf:.1f}", ts=ts)
+                detections = analyze_faces(frame, recognizer=recognizer, id_to_name=id_to_name, unknown_threshold=args.unknown_threshold)
+                if len(detections) == 0:
+                    unknown_streak_outdoor = max(0, unknown_streak_outdoor - 1)
                 else:
-                    unknown_streak_outdoor = 0
-                    emitter.emit_event("cam_outdoor", EVENT_AUTHORIZED, "Door Entrance Area", _face_event_details(detections), ts=ts)
+                    unknown_faces = [d for d in detections if d.get("label") == "UNKNOWN"]
+                    if unknown_faces:
+                        unknown_streak_outdoor += 1
+                        primary_unknown = max(unknown_faces, key=lambda d: float(d.get("confidence", 999.0)))
+                        conf = float(primary_unknown.get("confidence", 999.0))
+                        details = _face_event_details(detections)
+                        emitter.emit_event("cam_outdoor", EVENT_UNKNOWN, "Door Entrance Area", details, ts=ts)
 
-            if indoor is not None and (frame_i % (args.process_every * 6) == 0):
-                if reuse_outdoor_for_indoor:
-                    ok2, frame2 = True, frame
-                else:
-                    ok2, frame2 = indoor.read()
-                if ok2 and frame2 is not None:
-                    emitter.emit_status("cam_indoor", note="opencv loop", ts=ts)
+                        if unknown_streak_outdoor in (1, 6, args.unknown_streak):
+                            overlay = draw_face_detections(frame, detections)
+                            rel, _ = save_frame_snapshot(
+                                overlay if overlay is not None else frame,
+                                prefix=f"outdoor_unknown_{unknown_streak_outdoor}",
+                                ts_iso=ts,
+                            )
+                            create_snapshot("FACE_UNKNOWN", "UNKNOWN", rel, linked_alert_id=None, note=f"{details} | conf={conf:.1f}", ts=ts)
+                    else:
+                        unknown_streak_outdoor = 0
+                        emitter.emit_event("cam_outdoor", EVENT_AUTHORIZED, "Door Entrance Area", _face_event_details(detections), ts=ts)
+
+                if indoor_enabled and (frame_i % (args.process_every * 6) == 0):
+                    if reuse_outdoor_for_indoor:
+                        ok2, frame2 = True, frame
+                    else:
+                        if indoor is None or not indoor.isOpened():
+                            indoor = _open_capture(indoor_src)
+                            if not indoor.isOpened():
+                                indoor_fail_count += 1
+                                if indoor_fail_count == 1 or indoor_fail_count % 15 == 0:
+                                    print(f"⚠️  Indoor stream unavailable (fail={indoor_fail_count}), retrying...")
+                                indoor.release()
+                                indoor = None
+                                time.sleep(0.4)
+                                continue
+                        ok2, frame2 = indoor.read()
+                        if not ok2 or frame2 is None:
+                            if indoor_is_http:
+                                frame2 = _read_http_snapshot_frame(str(indoor_src), timeout_seconds=3.0)
+                                ok2 = frame2 is not None
+                            if not ok2 or frame2 is None:
+                                indoor_fail_count += 1
+                                if indoor_fail_count == 1 or indoor_fail_count % 15 == 0:
+                                    print(f"⚠️  Indoor read failed (fail={indoor_fail_count}), reconnecting...")
+                                if indoor is not None:
+                                    indoor.release()
+                                indoor = None
+                                time.sleep(0.4)
+                                continue
+
+                    indoor_fail_count = 0
+                    indoor_note_source = indoor_src if not _is_empty(indoor_src) else outdoor_src
+                    emitter.emit_status("cam_indoor", note=_stream_note("opencv loop", indoor_note_source), ts=ts)
 
                     detections2 = analyze_faces(
                         frame2,
@@ -521,8 +686,21 @@ def main():
                         else:
                             flame_streak = max(0, flame_streak - 1)
 
-            time.sleep(0.01)
+                time.sleep(0.01)
+            except Exception as exc:
+                print(f"[vision] loop error: {exc}")
+                time.sleep(0.5)
     finally:
+        try:
+            if indoor is not None and indoor is not outdoor:
+                indoor.release()
+        except Exception:
+            pass
+        try:
+            if outdoor is not None:
+                outdoor.release()
+        except Exception:
+            pass
         emitter.close()
 
 

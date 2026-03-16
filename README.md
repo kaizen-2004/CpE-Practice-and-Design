@@ -64,6 +64,28 @@ python pi/vision_runtime.py --event-sink mqtt --camera-mode esp32 \
 
 Open: `http://127.0.0.1:5000/dashboard`
 
+## Run (One Command)
+
+Use the stack launcher:
+
+```bash
+./pi/run_stack.sh
+```
+
+Optional examples:
+
+```bash
+# disable vision runtime
+./pi/run_stack.sh --no-vision
+
+# override camera URLs for this run
+./pi/run_stack.sh \
+  --outdoor-url http://192.168.1.10:81/stream \
+  --indoor-url http://192.168.1.10:81/stream
+```
+
+The script loads `.env` and `deploy/systemd/thesis.env` when present, starts all processes, and stops all when you press `Ctrl-C`.
+
 ## Integrated Dashboard (Flask + React)
 
 The dashboard frontend lives in `web_dashboard_ui/` and is served by Flask at `/dashboard`.

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Camera, Maximize2 } from 'lucide-react';
 import { StatusBadge } from '../components/StatusBadge';
-import { fetchLiveEvents, fetchLiveNodes } from '../data/liveApi';
+import { fetchLiveEvents, fetchLiveNodes, sendCameraControl } from '../data/liveApi';
 import {
   cameraFeeds as fallbackCameraFeeds,
   detectionPipelines as fallbackDetectionPipelines,
@@ -37,6 +37,9 @@ export function LiveMonitoring() {
   const [detectionPipelines, setDetectionPipelines] = useState<DetectionPipeline[]>(
     fallbackDetectionPipelines,
   );
+  const [flashStateByNode, setFlashStateByNode] = useState<Record<string, boolean>>({});
+  const [controlPendingByNode, setControlPendingByNode] = useState<Record<string, boolean>>({});
+  const [controlFeedbackByNode, setControlFeedbackByNode] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +93,14 @@ export function LiveMonitoring() {
   }, [events]);
 
   const eventsForRoom = (room: Room) => (eventsByRoom[String(room)] || []).slice(0, 5);
+  const eventsForNode = (nodeId: string) => events.filter((event) => event.sourceNode === nodeId);
+  const isFreshEvent = (timestamp: string, maxAgeSeconds = 90) => {
+    const ageMs = Date.now() - new Date(timestamp).getTime();
+    if (!Number.isFinite(ageMs)) {
+      return false;
+    }
+    return ageMs <= maxAgeSeconds * 1000;
+  };
 
   const lockLandscapeIfPossible = async () => {
     const lockableScreen = window.screen as LockableScreen;
@@ -151,8 +162,6 @@ export function LiveMonitoring() {
       if (fsDoc.msExitFullscreen) {
         await fsDoc.msExitFullscreen();
       }
-      setActiveFullscreenNodeId(null);
-      setForcedLandscapeNodeId(null);
       unlockOrientationIfPossible();
       return;
     }
@@ -172,8 +181,57 @@ export function LiveMonitoring() {
     await lockLandscapeIfPossible();
   };
 
-  const CameraPanel = ({ location, nodeId, streamPath }: { location: Room; nodeId: string; streamPath?: string }) => {
+  const handleLightToggle = async (nodeId: string, turnOn: boolean) => {
+    if (controlPendingByNode[nodeId]) {
+      return;
+    }
+
+    setControlPendingByNode((prev) => ({ ...prev, [nodeId]: true }));
+    setControlFeedbackByNode((prev) => ({ ...prev, [nodeId]: 'Sending command...' }));
+    try {
+      await sendCameraControl(nodeId, turnOn ? 'flash_on' : 'flash_off');
+      setFlashStateByNode((prev) => ({ ...prev, [nodeId]: turnOn }));
+      setControlFeedbackByNode((prev) => ({ ...prev, [nodeId]: turnOn ? 'Light turned ON.' : 'Light turned OFF.' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to send camera command.';
+      setControlFeedbackByNode((prev) => ({ ...prev, [nodeId]: message }));
+    } finally {
+      setControlPendingByNode((prev) => ({ ...prev, [nodeId]: false }));
+    }
+  };
+
+  const CameraPanel = ({
+    location,
+    nodeId,
+    streamPath,
+    status,
+  }: {
+    location: Room;
+    nodeId: string;
+    streamPath?: string;
+    status: CameraFeed['status'];
+  }) => {
     const events = eventsForRoom(location);
+    const nodeEvents = eventsForNode(nodeId);
+    const isOnline = status === 'online';
+    const lightState = flashStateByNode[nodeId];
+    const lightLabel = lightState == null ? 'Light state unknown' : (lightState ? 'Light: ON' : 'Light: OFF');
+    const latestFaceEvent = nodeEvents.find(
+      (event) => event.eventCode === 'UNKNOWN' || event.eventCode === 'AUTHORIZED',
+    );
+    const latestFlameEvent = nodeEvents.find((event) => event.eventCode === 'FLAME_SIGNAL');
+
+    const hasFreshFace = Boolean(latestFaceEvent && isFreshEvent(latestFaceEvent.timestamp));
+    const faceLabel = hasFreshFace
+      ? `Face: ${latestFaceEvent?.eventCode === 'UNKNOWN' ? 'UNKNOWN' : 'AUTHORIZED'}`
+      : 'Face: IDLE';
+    const faceSeverity: 'warning' | 'online' | 'info' = hasFreshFace
+      ? (latestFaceEvent?.eventCode === 'UNKNOWN' ? 'warning' : 'online')
+      : 'info';
+
+    const hasFreshFlame = Boolean(latestFlameEvent && isFreshEvent(latestFlameEvent.timestamp));
+    const flameLabel = hasFreshFlame ? 'Flame: DETECTED' : 'Flame: IDLE';
+    const flameSeverity: 'warning' | 'info' = hasFreshFlame ? 'warning' : 'info';
 
     return (
       <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
@@ -195,12 +253,12 @@ export function LiveMonitoring() {
               <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
               LIVE
             </span>
-            <StatusBadge severity="online" label={nodeId} size="sm" />
+            <StatusBadge severity={isOnline ? 'online' : 'offline'} label={nodeId} size="sm" />
           </div>
 
           <div className="absolute top-4 right-4 flex flex-col gap-2">
-            <StatusBadge severity="normal" label="Face: ON" size="sm" />
-            <StatusBadge severity="normal" label="Flame: ON" size="sm" />
+            <StatusBadge severity={faceSeverity} label={faceLabel} size="sm" />
+            <StatusBadge severity={flameSeverity} label={flameLabel} size="sm" />
           </div>
 
           <button
@@ -238,6 +296,30 @@ export function LiveMonitoring() {
               <p className="text-gray-500">Node</p>
               <p className="font-medium text-gray-900">{nodeId}</p>
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            <button
+              onClick={() => {
+                void handleLightToggle(nodeId, true);
+              }}
+              disabled={!isOnline || Boolean(controlPendingByNode[nodeId])}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-200 disabled:cursor-not-allowed"
+            >
+              Light ON
+            </button>
+            <button
+              onClick={() => {
+                void handleLightToggle(nodeId, false);
+              }}
+              disabled={!isOnline || Boolean(controlPendingByNode[nodeId])}
+              className="px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:border-gray-200 disabled:cursor-not-allowed"
+            >
+              Light OFF
+            </button>
+            <span className="text-xs text-gray-600">
+              {controlPendingByNode[nodeId] ? 'Sending...' : (controlFeedbackByNode[nodeId] || lightLabel)}
+            </span>
           </div>
 
           <div className="space-y-2">
@@ -288,6 +370,7 @@ export function LiveMonitoring() {
             location={feed.location}
             nodeId={feed.nodeId}
             streamPath={feed.streamAvailable ? feed.streamPath : ''}
+            status={feed.status}
           />
         ))}
       </div>

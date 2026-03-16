@@ -24,9 +24,11 @@ const char *WIFI_HOSTNAME = "cam-indoor";
 const char *NODE_ID = "cam_indoor";
 const char *ROOM_NAME = "Living Room";
 
+// Balanced profile for vision + preview:
+// keep VGA detail for face/fire analytics while improving stream fluidity.
 static const framesize_t CAMERA_FRAME_SIZE = FRAMESIZE_VGA;
-static const int CAMERA_JPEG_QUALITY = 12;
-static const uint32_t STREAM_FRAME_DELAY_MS = 70;
+static const int CAMERA_JPEG_QUALITY = 14;
+static const uint32_t STREAM_FRAME_DELAY_MS = 20;
 
 static const uint32_t WIFI_RETRY_INTERVAL_MS = 15000;
 static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
@@ -274,7 +276,7 @@ esp_err_t indexHandler(httpd_req_t *req) {
       "<img src='http://";
 
   String ip = WiFi.localIP().toString();
-  String page = String(INDEX_HTML) + ip + ":81/stream' style='max-width:100%;height:auto;border:1px solid #ccc'/>"
+  String page = String(INDEX_HTML) + ip + "/stream' style='max-width:100%;height:auto;border:1px solid #ccc'/>"
                   "</body></html>";
 
   httpd_resp_set_type(req, "text/html");
@@ -372,22 +374,14 @@ bool startCameraServer() {
   httpd_uri_t indexUri = {"/", HTTP_GET, indexHandler, nullptr};
   httpd_uri_t captureUri = {"/capture", HTTP_GET, captureHandler, nullptr};
   httpd_uri_t snapshotUri = {"/snapshot.jpg", HTTP_GET, captureHandler, nullptr};
+  httpd_uri_t streamUri = {"/stream", HTTP_GET, streamHandler, nullptr};
   httpd_register_uri_handler(cameraHttpd, &indexUri);
   httpd_register_uri_handler(cameraHttpd, &captureUri);
   httpd_register_uri_handler(cameraHttpd, &snapshotUri);
-
-  httpd_config_t streamCfg = HTTPD_DEFAULT_CONFIG();
-  streamCfg.server_port = 81;
-  streamCfg.ctrl_port = 32769;
-  if (httpd_start(&streamHttpd, &streamCfg) != ESP_OK) {
-    stopCameraServer();
-    return false;
-  }
-  httpd_uri_t streamUri = {"/stream", HTTP_GET, streamHandler, nullptr};
-  httpd_register_uri_handler(streamHttpd, &streamUri);
+  httpd_register_uri_handler(cameraHttpd, &streamUri);
 
   cameraServerRunning = true;
-  Serial.printf("[HTTP] stream=http://%s:81/stream\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[HTTP] stream=http://%s/stream\n", WiFi.localIP().toString().c_str());
   return true;
 }
 
@@ -476,7 +470,7 @@ void loop() {
     uint32_t now = millis();
     if (lastHeartbeatMs == 0 || (uint32_t)(now - lastHeartbeatMs) >= HEARTBEAT_INTERVAL_MS) {
       lastHeartbeatMs = now;
-      String note = "ip=" + WiFi.localIP().toString() + " stream=:81/stream";
+      String note = "ip=" + WiFi.localIP().toString() + " stream=/stream";
       mqttPublishStatus(true, note);
       mqttPublishEvent("CAM_HEARTBEAT", 0.0f, "na", note);
     }

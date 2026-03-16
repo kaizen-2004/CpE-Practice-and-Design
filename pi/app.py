@@ -17,6 +17,10 @@ from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
+try:
+    import paho.mqtt.publish as mqtt_publish
+except Exception:
+    mqtt_publish = None
 
 def _load_local_env() -> None:
     env_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".env"))
@@ -95,6 +99,11 @@ from config import (
     ROOMS,
     NODE_META,
     NODE_OFFLINE_SECONDS,
+    MQTT_TOPIC_ROOT,
+    MQTT_BROKER_HOST,
+    MQTT_BROKER_PORT,
+    MQTT_BROKER_USERNAME,
+    MQTT_BROKER_PASSWORD,
     normalize_node_id,
     get_node_meta,
     EVENT_SMOKE_HIGH,
@@ -116,6 +125,7 @@ CORE_ENDPOINTS = {
     "dashboard_live",
     "ui_nodes_live",
     "ui_events_live",
+    "ui_camera_control",
     "ui_stats_daily",
     "ui_settings_live",
     "api_faces_list",
@@ -133,6 +143,8 @@ CORE_ENDPOINTS = {
     "camera_frame",
     "camera_local_frame",
     "camera_local_stream",
+    "camera_processed_frame",
+    "camera_processed_stream",
     "serve_snapshot",
     "service_worker",
     "web_manifest",
@@ -636,6 +648,38 @@ def _runtime_uptime_label() -> str:
         return "-"
 
 
+def _camera_control_topic(node_id: str) -> str:
+    return f"{MQTT_TOPIC_ROOT}/camera/{normalize_node_id(node_id)}/control"
+
+
+def _publish_camera_control(node_id: str, command: str) -> tuple[bool, str, str]:
+    topic = _camera_control_topic(node_id)
+    payload = json.dumps({"cmd": command}, separators=(",", ":"))
+    if mqtt_publish is None:
+        return False, "paho-mqtt is not installed", topic
+
+    auth = None
+    if MQTT_BROKER_USERNAME:
+        auth = {"username": MQTT_BROKER_USERNAME, "password": MQTT_BROKER_PASSWORD}
+
+    try:
+        mqtt_publish.single(
+            topic,
+            payload=payload,
+            qos=1,
+            retain=False,
+            hostname=MQTT_BROKER_HOST or "127.0.0.1",
+            port=int(MQTT_BROKER_PORT),
+            auth=auth,
+            keepalive=20,
+            client_id=f"ui-camctl-{int(time.time())}",
+        )
+        return True, "", topic
+    except Exception as exc:
+        app.logger.warning("camera control publish failed node=%s command=%s error=%s", node_id, command, exc)
+        return False, str(exc), topic
+
+
 def _ui_profile_from_face_row(row) -> dict:
     created_ts = str(row["created_ts"] or "")
     enrolled = created_ts.split("T")[0] if "T" in created_ts else created_ts
@@ -984,14 +1028,14 @@ def _render_dashboard_template():
         outdoor_mode = "Not Connected"
         outdoor_is_stream = False
 
-    if indoor_local_source:
-        indoor_url = url_for("camera_local_stream", which="indoor")
-        indoor_mode = "USB Camera"
-        indoor_is_stream = True
-    elif indoor_src:
+    if indoor_src:
         indoor_url = url_for("camera_frame", which="indoor")
         indoor_mode = "Network Camera"
         indoor_is_stream = False
+    elif indoor_local_source:
+        indoor_url = url_for("camera_local_stream", which="indoor")
+        indoor_mode = "USB Camera"
+        indoor_is_stream = True
     else:
         indoor_url = ""
         indoor_mode = "Not Connected"
@@ -1037,11 +1081,76 @@ def web_manifest():
     return resp
 
 # ---- Camera Proxy ----
+def _extract_stream_url_from_text(raw_text: str) -> str:
+    text = str(raw_text or "").strip()
+    if not text:
+        return ""
+
+    full_url = re.search(r"stream=(https?://[^\s|]+)", text)
+    if full_url:
+        return full_url.group(1).strip()
+
+    ip_match = re.search(r"\bip=([0-9]{1,3}(?:\.[0-9]{1,3}){3})\b", text)
+    if not ip_match:
+        return ""
+    host = ip_match.group(1).strip()
+
+    stream_match = re.search(r"stream=([^\s|]+)", text)
+    if stream_match:
+        stream_raw = stream_match.group(1).strip()
+        if stream_raw.startswith(("http://", "https://")):
+            return stream_raw
+        if stream_raw.startswith(":") or stream_raw.startswith("/"):
+            return f"http://{host}{stream_raw}"
+
+    return f"http://{host}:81/stream"
+
+
+def _camera_url_from_recent_events(node_id: str) -> str:
+    node_key = normalize_node_id(node_id)
+    source = "CAM_OUTDOOR" if node_key == "cam_outdoor" else "CAM_INDOOR" if node_key == "cam_indoor" else ""
+    if not source:
+        return ""
+    try:
+        rows = list_recent_events(limit=240)
+    except Exception:
+        return ""
+
+    for row in rows:
+        if str(row["source"] or "").strip().upper() != source:
+            continue
+        url = _extract_stream_url_from_text(str(row["details"] or ""))
+        if url:
+            return url
+    return ""
+
+
+def _camera_url_from_node_note(node_id: str) -> str:
+    node_key = normalize_node_id(node_id)
+    try:
+        rows = list_node_status()
+    except Exception:
+        return ""
+
+    note = ""
+    for row in rows:
+        row_node = normalize_node_id(str(row["node"] or ""))
+        if row_node == node_key:
+            note = str(row["note"] or "")
+            break
+    url = _extract_stream_url_from_text(note)
+    if url:
+        return url
+    return _camera_url_from_recent_events(node_id)
+
+
 def _camera_url_for(which: str) -> str:
     if which == "outdoor":
-        return os.environ.get("OUTDOOR_URL", "").strip()
+        explicit = os.environ.get("OUTDOOR_URL", "").strip()
+        return explicit or _camera_url_from_node_note("cam_outdoor")
     if which == "indoor":
-        return os.environ.get("INDOOR_URL", "").strip()
+        explicit = os.environ.get("INDOOR_URL", "").strip()
+        return explicit or _camera_url_from_node_note("cam_indoor")
     return ""
 
 def _fetch_single_jpeg(src_url: str, timeout_seconds: float = 6.0) -> Optional[bytes]:
@@ -1075,6 +1184,37 @@ def _local_camera_source_for(which: str) -> str:
     return source
 
 
+def _camera_capture_source_for(which: str) -> str:
+    local_source = _local_camera_source_for(which)
+    if local_source:
+        return local_source
+    return _camera_url_for(which)
+
+
+def _open_camera_capture(source_raw: str):
+    source = _coerce_capture_source(source_raw)
+    is_local_device = isinstance(source, int)
+    if isinstance(source, str) and source.startswith("/dev/video"):
+        is_local_device = True
+    if is_local_device:
+        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        if cap.isOpened():
+            return cap
+        cap.release()
+    return cv2.VideoCapture(source)
+
+
+def _encode_annotated_frame(frame_bgr) -> Optional[bytes]:
+    if frame_bgr is None:
+        return None
+    annotated, _ = _annotate_face_frame(frame_bgr)
+    out = annotated if annotated is not None else frame_bgr
+    ok, enc = cv2.imencode(".jpg", out, [int(cv2.IMWRITE_JPEG_QUALITY), _local_camera_jpeg_quality()])
+    if not ok:
+        return None
+    return enc.tobytes()
+
+
 def _local_camera_jpeg_quality() -> int:
     try:
         value = int(os.environ.get("LOCAL_CAM_JPEG_QUALITY", "80"))
@@ -1097,6 +1237,14 @@ def _local_stream_fps() -> float:
     except Exception:
         value = 12.0
     return max(2.0, min(30.0, value))
+
+
+def _processed_stream_fps() -> float:
+    try:
+        value = float(os.environ.get("PROCESSED_STREAM_FPS", "8"))
+    except Exception:
+        value = 8.0
+    return max(2.0, min(20.0, value))
 
 
 class _LocalCameraWorker:
@@ -1201,6 +1349,10 @@ _LOCAL_CAMERA_WORKERS: dict[str, _LocalCameraWorker] = {}
 _LOCAL_CAMERA_BINDINGS: dict[str, str] = {}
 _LOCAL_CAMERA_WORKERS_LOCK = threading.Lock()
 
+_PROCESSED_CAMERA_WORKERS: dict[str, "_ProcessedCameraWorker"] = {}
+_PROCESSED_CAMERA_BINDINGS: dict[str, str] = {}
+_PROCESSED_CAMERA_WORKERS_LOCK = threading.Lock()
+
 
 def _get_local_camera_worker(which: str) -> Optional[_LocalCameraWorker]:
     source_raw = _local_camera_source_for(which)
@@ -1224,6 +1376,139 @@ def _get_local_camera_worker(which: str) -> Optional[_LocalCameraWorker]:
         return worker
 
 
+class _ProcessedCameraWorker:
+    def __init__(self, which: str, source_raw: str):
+        self.which = which
+        self.source_raw = source_raw
+        self._lock = threading.Lock()
+        self._latest_jpeg: Optional[bytes] = None
+        self._last_frame_ts = 0.0
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"cam-processed-{self.which}")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.5)
+
+    def latest_frame(self) -> Optional[bytes]:
+        with self._lock:
+            return self._latest_jpeg
+
+    def latest_frame_with_ts(self):
+        with self._lock:
+            return self._latest_jpeg, self._last_frame_ts
+
+    def _run(self) -> None:
+        cap = None
+        retry_seconds = _local_camera_retry_seconds()
+        interval = 1.0 / _processed_stream_fps()
+        source_desc = str(self.source_raw).strip()
+        is_http_source = source_desc.startswith(("http://", "https://"))
+        fail_count = 0
+
+        while not self._stop_event.is_set():
+            jpeg = None
+            try:
+                if cap is None or not cap.isOpened():
+                    cap = _open_camera_capture(self.source_raw)
+                    if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    if not cap.isOpened():
+                        if cap is not None:
+                            cap.release()
+                            cap = None
+
+                        if is_http_source:
+                            try:
+                                raw = _fetch_single_jpeg(source_desc, timeout_seconds=max(2.0, retry_seconds + 1.0))
+                                if raw:
+                                    jpeg = _annotate_face_jpeg(raw)
+                            except Exception:
+                                jpeg = None
+
+                        if not jpeg:
+                            fail_count += 1
+                            if fail_count == 1 or fail_count % 20 == 0:
+                                app.logger.warning(
+                                    "Processed camera '%s' unavailable at source '%s' (fail=%s).",
+                                    self.which,
+                                    self.source_raw,
+                                    fail_count,
+                                )
+                            time.sleep(retry_seconds)
+                            continue
+
+                if jpeg is None:
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        fail_count += 1
+                        if fail_count == 1 or fail_count % 20 == 0:
+                            app.logger.warning(
+                                "Processed camera '%s' read stalled at source '%s' (fail=%s).",
+                                self.which,
+                                self.source_raw,
+                                fail_count,
+                            )
+                        if cap is not None:
+                            cap.release()
+                            cap = None
+                        time.sleep(min(1.5, retry_seconds))
+                        continue
+
+                    jpeg = _encode_annotated_frame(frame)
+                    if not jpeg:
+                        time.sleep(interval * 0.5)
+                        continue
+
+                fail_count = 0
+                with self._lock:
+                    self._latest_jpeg = jpeg
+                    self._last_frame_ts = time.time()
+            except Exception:
+                fail_count += 1
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                if fail_count == 1 or fail_count % 20 == 0:
+                    app.logger.exception("Processed camera '%s' crashed; retrying.", self.which)
+                time.sleep(retry_seconds)
+                continue
+
+            time.sleep(interval)
+
+        if cap is not None:
+            cap.release()
+
+
+def _get_processed_camera_worker(which: str) -> Optional[_ProcessedCameraWorker]:
+    source_raw = _camera_capture_source_for(which)
+    if not source_raw:
+        return None
+    with _PROCESSED_CAMERA_WORKERS_LOCK:
+        prev_source = _PROCESSED_CAMERA_BINDINGS.get(which)
+        if prev_source and prev_source != source_raw:
+            _PROCESSED_CAMERA_BINDINGS.pop(which, None)
+            old_worker = _PROCESSED_CAMERA_WORKERS.get(prev_source)
+            if old_worker and prev_source not in _PROCESSED_CAMERA_BINDINGS.values():
+                old_worker.stop()
+                _PROCESSED_CAMERA_WORKERS.pop(prev_source, None)
+
+        worker = _PROCESSED_CAMERA_WORKERS.get(source_raw)
+        if worker is None:
+            worker = _ProcessedCameraWorker(which=which, source_raw=source_raw)
+            worker.start()
+            _PROCESSED_CAMERA_WORKERS[source_raw] = worker
+        _PROCESSED_CAMERA_BINDINGS[which] = source_raw
+        return worker
+
+
 def _stop_local_camera_workers() -> None:
     with _LOCAL_CAMERA_WORKERS_LOCK:
         workers = list(_LOCAL_CAMERA_WORKERS.values())
@@ -1233,7 +1518,17 @@ def _stop_local_camera_workers() -> None:
         worker.stop()
 
 
+def _stop_processed_camera_workers() -> None:
+    with _PROCESSED_CAMERA_WORKERS_LOCK:
+        workers = list(_PROCESSED_CAMERA_WORKERS.values())
+        _PROCESSED_CAMERA_WORKERS.clear()
+        _PROCESSED_CAMERA_BINDINGS.clear()
+    for worker in workers:
+        worker.stop()
+
+
 atexit.register(_stop_local_camera_workers)
+atexit.register(_stop_processed_camera_workers)
 
 @app.get("/camera/<string:which>")
 def camera_proxy(which: str):
@@ -1273,6 +1568,58 @@ def camera_frame(which: str):
         return Response("camera unavailable", status=503, mimetype="text/plain")
     jpeg = _annotate_face_jpeg(jpeg)
     resp = Response(jpeg, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.get("/camera/processed/frame/<string:which>")
+def camera_processed_frame(which: str):
+    if which not in ("outdoor", "indoor"):
+        abort(404)
+    worker = _get_processed_camera_worker(which)
+    if not worker:
+        abort(404)
+    jpeg = worker.latest_frame()
+
+    if not jpeg:
+        return Response("camera unavailable", status=503, mimetype="text/plain")
+    resp = Response(jpeg, mimetype="image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.get("/camera/processed/stream/<string:which>")
+def camera_processed_stream(which: str):
+    if which not in ("outdoor", "indoor"):
+        abort(404)
+    worker = _get_processed_camera_worker(which)
+    if not worker:
+        abort(404)
+    fps = _processed_stream_fps()
+    interval = 1.0 / fps
+
+    def generate():
+        last_sent_ts = 0.0
+        while True:
+            jpeg, ts_value = worker.latest_frame_with_ts()
+            if not jpeg:
+                time.sleep(interval)
+                continue
+            if ts_value <= last_sent_ts:
+                time.sleep(interval * 0.5)
+                continue
+            last_sent_ts = ts_value
+            header = (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                + f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+            )
+            yield header + jpeg + b"\r\n"
+            time.sleep(interval)
+
+    resp = Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -1383,6 +1730,47 @@ def ui_events_live():
     )
 
 
+@app.post("/api/ui/camera/control")
+def ui_camera_control():
+    payload = request.get_json(silent=True) or {}
+    node_id = normalize_node_id(payload.get("node_id", ""))
+    command = str(payload.get("command", "")).strip().lower()
+    allowed_commands = {"flash_on", "flash_off", "status"}
+
+    meta = NODE_META.get(node_id) or {}
+    if meta.get("kind") != "camera":
+        return jsonify({"ok": False, "error": "Invalid camera node.", "node_id": node_id}), 400
+
+    if command not in allowed_commands:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Unsupported camera command.",
+                    "allowed_commands": sorted(allowed_commands),
+                }
+            ),
+            400,
+        )
+
+    ok, err, topic = _publish_camera_control(node_id, command)
+    if not ok:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": f"Failed to publish camera command: {err}",
+                    "node_id": node_id,
+                    "command": command,
+                    "topic": topic,
+                }
+            ),
+            502,
+        )
+
+    return jsonify({"ok": True, "node_id": node_id, "command": command, "topic": topic})
+
+
 @app.get("/api/ui/nodes/live")
 def ui_nodes_live():
     node_rows = list_node_status()
@@ -1417,17 +1805,17 @@ def ui_nodes_live():
         if meta.get("kind") == "camera":
             which = "outdoor" if node_id == "cam_outdoor" else "indoor"
             stream_path = ""
-            if _local_camera_source_for(which):
-                stream_path = f"/camera/local/stream/{which}"
-            elif _camera_url_for(which):
-                stream_path = f"/camera/{which}"
+            source_raw = _camera_capture_source_for(which)
+            if source_raw:
+                # Use backend processed stream to overlay live face boxes/labels.
+                stream_path = f"/camera/processed/stream/{which}"
 
             camera_feeds.append(
                 {
                     "location": str(meta.get("room", "")),
                     "node_id": node_id,
                     "status": "online" if online else "offline",
-                    "quality": "ESP32-CAM stream",
+                    "quality": "ESP32-CAM + OpenCV overlay",
                     "fps": 20 if online else 0,
                     "latency_ms": 150 if online else 0,
                     "stream_path": stream_path,
